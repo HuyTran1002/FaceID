@@ -1,0 +1,46 @@
+{
+  "name": "faceid",
+  "version": "1.0.0",
+  "description": "",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "electron-builder",
+    "build:debug": "electron-packager . FaceIDSecurity --platform=win32 --arch=x64 --out=dist --overwrite",
+    "build:exe": "electron-packager . FaceIDSecurity --platform=win32 --arch=x64 --out=dist --overwrite"
+  },
+  "build": {
+    "appId": "com.huyblink.faceid",
+    "productName": "FaceID Security",
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "portable",
+      "icon": "assets/icon.png"
+    },
+    "files": [
+      "index.html",
+      "renderer.js",
+      "main.js",
+      "style.css",
+      "assets/**/*",
+      "models/**/*"
+    ],
+    "asar": true
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "face-api.js": "^0.22.2",
+    "python-shell": "^5.0.0"
+  },
+  "devDependencies": {
+    "electron": "^41.2.0",
+    "electron-builder": "^24.13.3",
+    "electron-packager": "^17.1.2"
+  }
+}

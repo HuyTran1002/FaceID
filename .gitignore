@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+dist/
+
+# Python cache
+__pycache__/
+*.pyc
+venv/
+
+# App Data (Security)
+registered_face.json
+config.json
+lastCapturedData
+
+# OS files
+.DS_Store
+Thumbs.db

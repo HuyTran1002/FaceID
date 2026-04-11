@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FaceID Security</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="lock-screen" class="active">
+        <div class="glass-panel">
+            <div class="logo-container">
+                <img src="assets/icon.png" alt="Logo" class="app-logo">
+            </div>
+            <div id="clock-container" class="clock-display">
+                <div id="clock-time">00:00:00</div>
+                <div id="clock-date">Ngày 01 Tháng 01, 2024</div>
+            </div>
+            <h1 id="status-text">Đã Khóa</h1>
+            <p id="sub-status">Nhấn đễ bắt đầu quét khuôn mặt</p>
+            <div class="controls">
+                <button id="unlock-btn" class="primary-btn">Mở Khóa</button>
+                <button id="register-btn" class="secondary-btn">Đăng ký mới</button>
+            </div>
+            <div class="extra-controls">
+                <button id="settings-btn" class="link-btn">Cài đặt nâng cao</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="scan-screen">
+        <div class="scan-container">
+            <video id="video" autoplay muted playsinline></video>
+            <canvas id="canvas"></canvas>
+            <div class="scan-overlay">
+                <div class="scanner-line"></div>
+            </div>
+            <div id="scan-info" class="glass-info">
+                <p id="scan-status-msg">Đang khởi tạo camera...</p>
+            </div>
+            <button id="cancel-scan-btn" class="close-btn">&times;</button>
+        </div>
+    </div>
+
+    <!-- Password Modal -->
+    <div id="password-modal" class="modal">
+        <div class="modal-content glass-panel">
+            <h2>Xác thực quyền</h2>
+            <p>Nhập mật khẩu để đăng ký khuôn mặt mới</p>
+            <input type="password" id="admin-pass" placeholder="Mật khẩu..." autofocus>
+            <div class="modal-footer">
+                <button id="verify-pass-btn" class="primary-btn">Xác nhận</button>
+                <button id="close-modal-btn" class="secondary-btn">Hủy</button>
+            </div>
+            <p id="error-msg" class="error"></p>
+        </div>
+    </div>
+
+    <!-- Notification Modal -->
+    <div id="notification-modal" class="modal">
+        <div class="modal-content glass-panel" style="max-width: 400px;">
+            <div class="logo-container" style="margin-bottom: 20px;">
+                <img src="assets/icon.png" alt="Logo" class="app-logo" style="width: 60px; height: 60px;">
+            </div>
+            <h2>Thông báo</h2>
+            <p id="notification-msg" style="margin: 20px 0; line-height: 1.6;"></p>
+            <div class="modal-footer">
+                <button id="close-notification-btn" class="primary-btn">Đã hiểu</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Naming Modal -->
+    <div id="naming-modal" class="modal">
+        <div class="modal-content glass-panel">
+            <h2>Thiết lập đăng ký</h2>
+            <p>Nhập tên gợi nhớ cho diện mạo này</p>
+            <input type="text" id="face-name-input" placeholder="Ví dụ: Mặt mộc, Đeo khẩu trang..." maxlength="20">
+            <p id="naming-error" class="error"></p>
+            <div class="modal-footer">
+                <button id="save-face-btn" class="primary-btn">Bắt đầu quét khuôn mặt</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Management Modal -->
+    <div id="management-modal" class="modal">
+        <div class="modal-content glass-panel" style="max-width: 600px;">
+            <h2>Quản lý khuôn mặt</h2>
+            <div class="list-container" id="face-list">
+                <!-- Danh sách sẽ được chèn bởi JS -->
+                <p>Đang tải danh sách...</p>
+            </div>
+            <div class="modal-footer">
+                <button id="close-management-btn" class="secondary-btn">Đóng</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="modal">
+        <div class="modal-content glass-panel">
+            <h2>Cài đặt bảo mật</h2>
+            <div class="settings-group">
+                <label>Mật khẩu Admin (Tầng 1)</label>
+                <input type="password" id="new-admin-pass" placeholder="Mật khẩu mới...">
+            </div>
+            <div class="settings-group">
+                <label>Mật khẩu Bí mật (Tầng 2)</label>
+                <input type="password" id="new-secret-pass" placeholder="Mật khẩu cực bí mật...">
+            </div>
+            <div class="modal-footer">
+                <button id="save-settings-btn" class="primary-btn">Cập nhật tất cả</button>
+                <button id="close-settings-btn" class="secondary-btn">Hủy</button>
+            </div>
+            <p id="settings-msg" class="success-msg"></p>
+        </div>
+    </div>
+
+    <!-- Custom Confirmation Modal -->
+    <div id="confirmation-modal" class="modal">
+        <div class="modal-content glass-panel" style="max-width: 400px;">
+            <h2>Xác nhận</h2>
+            <p id="confirm-modal-msg" style="margin: 20px 0;"></p>
+            <div class="modal-footer">
+                <button id="confirm-yes-btn" class="primary-btn">Đồng ý</button>
+                <button id="confirm-no-btn" class="secondary-btn">Hủy</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Custom Confirmation Modal -->
+    <div id="confirmation-modal" class="modal">
+        <div class="modal-content glass-panel" style="max-width: 400px;">
+            <h2>Xác nhận</h2>
+            <p id="confirm-modal-msg" style="margin: 20px 0;"></p>
+            <div class="modal-footer">
+                <button id="confirm-yes-btn" class="primary-btn">Đồng ý</button>
+                <button id="confirm-no-btn" class="secondary-btn">Hủy</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Script Load -->
+    <script src="node_modules/face-api.js/dist/face-api.min.js"></script>
+    <script src="renderer.js"></script>
+</body>
+</html>
