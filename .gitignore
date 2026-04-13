@@ -15,3 +15,9 @@ lastCapturedData
 # OS files
 .DS_Store
 Thumbs.db
+
+# Builder outputs
+.venv/
+build/
+python_core/
+*.spec
