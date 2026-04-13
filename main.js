@@ -1,7 +1,9 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, screen, globalShortcut } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, screen, globalShortcut, dialog } = require('electron');
 const path = require('path');
-const { PythonShell } = require('python-shell');
 const fs = require('fs');
+const { spawn } = require('child_process');
+const readline = require('readline');
+const { PythonShell } = require('python-shell');
 
 let mainWindow;
 let tray = null;
@@ -45,7 +47,6 @@ if (!gotTheLock) {
     app.quit();
 } else {
     app.on('second-instance', (event, commandLine, workingDirectory) => {
-        // Nếu người dùng cố gắng mở instance thứ hai, hãy hiện app và Khóa ngay lập tức
         if (mainWindow) {
             if (mainWindow.isMinimized()) mainWindow.restore();
             lockApp(); 
@@ -54,29 +55,68 @@ if (!gotTheLock) {
     });
 }
 
-// Initialize Python Shell
-const pyOptions = {
-    mode: 'json',
-    pythonPath: 'py', // Using 'py' as verified earlier
-    pythonOptions: ['-u'], // get print results in real-time
-    scriptPath: __dirname,
-};
+// --- HYBRID AI ENGINE INITIALIZATION ---
+let pyshell = null; // Standard Mode
+let pyProcess = null; // EXE Packaged Mode
 
-let pyshell = new PythonShell('face_logic.py', pyOptions);
+function initPython() {
+    try {
+        if (app.isPackaged) {
+            // PROD - Run from bundled Executable
+            const exePath = path.join(process.resourcesPath, 'python_core', 'face_logic', 'face_logic.exe');
+            if (fs.existsSync(exePath)) {
+                // console.log("Khởi động Production AI Core (EXE)...");
+                pyProcess = spawn(exePath, [], {
+                    stdio: ['pipe', 'pipe', 'pipe'],
+                    windowsHide: true,
+                    env: { ...process.env, PYTHONUNBUFFERED: "1" }
+                });
 
-pyshell.on('message', function (message) {
-    if (mainWindow) {
-        mainWindow.webContents.send('python-result', message);
+                const rl = readline.createInterface({
+                    input: pyProcess.stdout,
+                    terminal: false
+                });
+
+                rl.on('line', (line) => {
+                    if (line.trim()) {
+                        try {
+                            const result = JSON.parse(line);
+                            if (mainWindow) mainWindow.webContents.send('python-result', result);
+                        } catch (e) {
+                            console.log('AI PARSE ERR:', line);
+                        }
+                    }
+                });
+
+                // Tắt log debug từ backend
+                // pyProcess.stderr.on('data', (data) => console.log('AI DEBUG:', data.toString()));
+                pyProcess.on('error', (err) => console.error('AI EXE ERR:', err));
+                return;
+            } else {
+                console.error("Critical: Không tìm thấy face_logic.exe trong resourcesPath");
+            }
+        }
+        
+        // DEV - Run from .venv source
+        // console.log("Khởi động Development AI Core (Script)...");
+        const pyOptions = {
+            mode: 'json',
+            pythonPath: path.join(__dirname, '.venv', 'Scripts', 'python.exe'), 
+            pythonOptions: ['-u'], 
+            scriptPath: __dirname
+        };
+        pyshell = new PythonShell('face_logic.py', pyOptions);
+        
+        pyshell.on('message', (message) => {
+            if (mainWindow) mainWindow.webContents.send('python-result', message);
+        });
+        // pyshell.on('stderr', (stderr) => console.log('AI DEV DEBUG:', stderr));
+        pyshell.on('error', (err) => console.error('AI DEV ERROR:', err));
+        
+    } catch (e) {
+        console.error("Failed to init AI Engine:", e);
     }
-});
-
-pyshell.on('stderr', function (stderr) {
-    console.log('PYTHON DEBUG:', stderr);
-});
-
-pyshell.on('error', function (err) {
-    console.error('PYTHON ERROR:', err);
-});
+}
 
 function createWindow() {
     const { width, height } = screen.getPrimaryDisplay().workAreaSize;
@@ -89,26 +129,19 @@ function createWindow() {
         frame: false,
         skipTaskbar: true,
         resizable: false,
-        movable: false,
-        closable: false,
         webPreferences: {
             nodeIntegration: true,
-            contextIsolation: false,
-            enableRemoteModule: true
+            contextIsolation: false
         },
         icon: path.join(__dirname, 'assets/icon.png')
     });
 
     mainWindow.loadFile('index.html');
 
-    // Prevent closing with Alt+F4
     mainWindow.on('close', (e) => {
-        if (isLocked) {
-            e.preventDefault();
-        }
+        if (isLocked) e.preventDefault();
     });
 
-    // Handle being pushed back by other windows
     mainWindow.on('blur', () => {
         if (isLocked) {
             mainWindow.setAlwaysOnTop(true, 'screen-saver');
@@ -118,50 +151,28 @@ function createWindow() {
 }
 
 function createTray() {
-    const iconPath = path.join(__dirname, 'assets/icon.png');
-    tray = new Tray(iconPath);
-    
-    const contextMenu = Menu.buildFromTemplate([
-        { 
-            label: 'FaceID Security', 
-            enabled: false 
-        },
-        { type: 'separator' },
-        { 
-            label: 'Mở ứng dụng', 
-            click: () => {
+    try {
+        const iconPath = path.join(__dirname, 'assets/icon.png');
+        tray = new Tray(iconPath);
+        
+        const contextMenu = Menu.buildFromTemplate([
+            { label: 'FaceID Security', enabled: false },
+            { type: 'separator' },
+            { label: 'Mở ứng dụng', click: () => { mainWindow.show(); mainWindow.setFullScreen(true); } },
+            { label: 'Khóa ngay lập tức', click: () => { lockApp(); } },
+            { type: 'separator' },
+            { label: 'Thoát hoàn toàn app', click: () => { 
                 mainWindow.show();
-                mainWindow.setFullScreen(true);
-            } 
-        },
-        { 
-            label: 'Khóa ngay lập tức', 
-            click: () => {
-                lockApp();
-            } 
-        },
-        { type: 'separator' },
-        { 
-            label: 'Thoát hoàn toàn app', 
-            click: () => {
-                mainWindow.show();
-                mainWindow.webContents.send('request-exit-pass');
-            } 
-        }
-    ]);
+                mainWindow.webContents.send('request-exit-pass'); 
+            } }
+        ]);
 
-    tray.setToolTip('FaceID App - Đang chạy ngầm');
-    tray.setContextMenu(contextMenu);
-
-    // Xử lý click chuột trái
-    tray.on('click', () => {
-        mainWindow.show();
-    });
-
-    // Xử lý chuột phải rõ ràng cho Windows
-    tray.on('right-click', () => {
-        tray.popUpContextMenu(contextMenu);
-    });
+        tray.setToolTip('FaceID App - Đang chạy ngầm');
+        tray.setContextMenu(contextMenu);
+        tray.on('click', () => { mainWindow.show(); });
+    } catch (e) {
+        console.error("Tray creation failed:", e);
+    }
 }
 
 function lockApp() {
@@ -183,55 +194,36 @@ function unlockApp() {
 app.whenReady().then(() => {
     createWindow();
     createTray();
+    initPython(); 
 
-    // Phím tắt mở DevTools để debug
     globalShortcut.register('CommandOrControl+Shift+I', () => {
-        if (mainWindow) {
-            mainWindow.webContents.toggleDevTools();
-        }
+        if (mainWindow) mainWindow.webContents.toggleDevTools();
     });
 
-    // Phím tắt thoát app (Ctrl + Alt + L)
     globalShortcut.register('CommandOrControl+Alt+L', () => {
-        if (mainWindow) {
-            mainWindow.webContents.send('request-exit-pass');
-        }
+        if (mainWindow) mainWindow.webContents.send('request-exit-pass');
     });
 
-    // Phím tắt khóa màn hình (Ctrl + Alt + K)
     globalShortcut.register('CommandOrControl+Alt+K', () => {
         lockApp();
     });
-
-    app.on('activate', function () {
-        if (BrowserWindow.getAllWindows().length === 0) createWindow();
-    });
 });
 
-ipcMain.on('unlock-success', () => {
-    unlockApp();
-});
+ipcMain.on('unlock-success', () => { unlockApp(); });
+ipcMain.on('request-lock', () => { lockApp(); });
 
-ipcMain.on('request-lock', () => {
-    lockApp();
-});
-
-ipcMain.on('get-config', (event) => {
-    event.reply('config-result', { adminPass: config.adminPass, secretPass: config.secretPass });
-});
-
-ipcMain.on('update-config', (event, newConfig) => {
-    config = { ...config, ...newConfig };
+ipcMain.on('update-settings', (event, { newAdminPass, newSecretPass }) => {
+    if (newAdminPass) config.adminPass = newAdminPass;
+    if (newSecretPass) config.secretPass = newSecretPass;
     saveConfig();
-    event.reply('update-config-success');
+    event.reply('update-settings-result', { success: true });
 });
 
 ipcMain.on('verify-password', (event, { password, type }) => {
-    // type: 'admin' or 'secret'
     let isValid = false;
     if (type === 'admin') {
         isValid = (password === config.adminPass || password === config.secretPass);
-    } else {
+    } else if (type === 'secret') {
         isValid = (password === config.secretPass);
     }
     event.reply('verify-password-result', { isValid, type });
@@ -240,14 +232,15 @@ ipcMain.on('verify-password', (event, { password, type }) => {
 ipcMain.on('exit-app-verified', () => {
     isLocked = false;
     globalShortcut.unregisterAll();
-    // Bỏ qua tất cả các sự kiện 'close' và đóng ngay lập tức
+    if (pyProcess) pyProcess.kill();
     app.exit(0);
 });
 
 ipcMain.on('process-image-python', (event, data) => {
-    if (pyshell) {
-        // Gửi kèm đường dẫn userData để Python biết chỗ lưu/đọc file
-        data.user_data_path = app.getPath('userData');
+    data.user_data_path = app.getPath('userData');
+    if (app.isPackaged && pyProcess && !pyProcess.killed) {
+        pyProcess.stdin.write(JSON.stringify(data) + '\n');
+    } else if (pyshell) {
         pyshell.send(data);
     }
 });
@@ -257,21 +250,15 @@ ipcMain.on('check-registration-status', (event) => {
     const pythonRegPath = path.join(userDataPath, 'registered_face.json');
     let hasPythonReg = false;
     if (fs.existsSync(pythonRegPath)) {
-        const data = JSON.parse(fs.readFileSync(pythonRegPath, 'utf8'));
-        hasPythonReg = Array.isArray(data) ? data.length > 0 : (data.encoding ? true : false);
+        try {
+            const data = JSON.parse(fs.readFileSync(pythonRegPath, 'utf8'));
+            hasPythonReg = Array.isArray(data) ? data.length > 0 : !!data.encoding;
+        } catch(e) {}
     }
     event.reply('registration-status-result', { hasPythonReg });
 });
 
-ipcMain.on('emergency-exit', () => {
-    // Show password modal for exit
-    if (mainWindow) {
-        mainWindow.webContents.send('request-exit-pass');
-    }
-});
-
 app.on('window-all-closed', function () {
-    pythonExit = true;
     if (pyshell) pyshell.end();
     if (process.platform !== 'darwin') app.quit();
 });

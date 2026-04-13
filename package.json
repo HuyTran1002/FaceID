@@ -20,13 +20,16 @@
       "target": "portable",
       "icon": "assets/icon.png"
     },
+    "extraResources": [
+      "python_core/**/*",
+      "models/**/*"
+    ],
     "files": [
       "index.html",
       "renderer.js",
       "main.js",
       "style.css",
-      "assets/**/*",
-      "models/**/*"
+      "assets/**/*"
     ],
     "asar": true
   },

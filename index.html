@@ -1,11 +1,13 @@
 <!DOCTYPE html>
 <html lang="vi">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FaceID Security</title>
     <link rel="stylesheet" href="style.css">
 </head>
+
 <body>
     <div id="lock-screen" class="active">
         <div class="glass-panel">
@@ -20,7 +22,7 @@
             <p id="sub-status">Nhấn đễ bắt đầu quét khuôn mặt</p>
             <div class="controls">
                 <button id="unlock-btn" class="primary-btn">Mở Khóa</button>
-                <button id="register-btn" class="secondary-btn">Đăng ký mới</button>
+                <button id="register-btn" class="secondary-btn">Đăng Kí</button>
             </div>
             <div class="extra-controls">
                 <button id="settings-btn" class="link-btn">Cài đặt nâng cao</button>
@@ -28,10 +30,27 @@
         </div>
     </div>
 
+    <!-- LOG CONSOLE (Đã được tắt theo yêu cầu) -->
     <div id="scan-screen">
         <div class="scan-container">
             <video id="video" autoplay muted playsinline></video>
             <canvas id="canvas"></canvas>
+
+            <div id="guide-ui" style="display: none;">
+                <div class="guide-container">
+                    <div id="guide-text" class="guide-step-text">Nhìn thẳng vào camera</div>
+                    <div id="arrow-up" class="guide-arrow"
+                        style="top: -30px; left: 50%; transform: translateX(-50%) rotate(-45deg);"></div>
+                    <div id="arrow-down" class="guide-arrow"
+                        style="bottom: -30px; left: 50%; transform: translateX(-50%) rotate(135deg);"></div>
+                    <div id="arrow-left" class="guide-arrow"
+                        style="left: -30px; top: 50%; transform: translateY(-50%) rotate(225deg);"></div>
+                    <div id="arrow-right" class="guide-arrow"
+                        style="right: -30px; top: 50%; transform: translateY(-50%) rotate(45deg);"></div>
+                </div>
+                <div id="guide-check" class="guide-check">✅</div>
+            </div>
+
             <div class="scan-overlay">
                 <div class="scanner-line"></div>
             </div>
@@ -45,8 +64,8 @@
     <!-- Password Modal -->
     <div id="password-modal" class="modal">
         <div class="modal-content glass-panel">
-            <h2>Xác thực quyền</h2>
-            <p>Nhập mật khẩu để đăng ký khuôn mặt mới</p>
+            <h2 id="modal-title">Xác thực quyền</h2>
+            <p id="modal-prompt">Nhập mật khẩu để đăng ký khuôn mặt mới</p>
             <input type="password" id="admin-pass" placeholder="Mật khẩu..." autofocus>
             <div class="modal-footer">
                 <button id="verify-pass-btn" class="primary-btn">Xác nhận</button>
@@ -83,40 +102,40 @@
         </div>
     </div>
 
-    <!-- Management Modal -->
+    <!-- Management Modal (Unified) -->
     <div id="management-modal" class="modal">
         <div class="modal-content glass-panel" style="max-width: 600px;">
-            <h2>Quản lý khuôn mặt</h2>
-            <div class="list-container" id="face-list">
-                <!-- Danh sách sẽ được chèn bởi JS -->
-                <p>Đang tải danh sách...</p>
+            <h2>Quản lý & Cài đặt Nâng cao</h2>
+
+            <div class="settings-section">
+                <h3>Danh sách khuôn mặt</h3>
+                <div class="list-container" id="face-list">
+                    <p>Đang tải danh sách...</p>
+                </div>
             </div>
-            <div class="modal-footer">
+
+            <div class="settings-section"
+                style="margin-top: 20px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 15px;">
+                <h3>Cài đặt bảo mật</h3>
+                <div class="settings-group">
+                    <label>Mật khẩu Admin (Tầng 1)</label>
+                    <input type="password" id="new-admin-pass" placeholder="Mật khẩu mới...">
+                </div>
+                <div class="settings-group">
+                    <label>Mật khẩu Bí mật (Tầng 2)</label>
+                    <input type="password" id="new-secret-pass" placeholder="Mật khẩu cực bí mật...">
+                </div>
+                <button id="save-settings-btn" class="primary-btn" style="width: 100%; margin-top: 10px;">Cập nhật mật
+                    khẩu</button>
+                <p id="settings-msg" class="success-msg"></p>
+            </div>
+
+            <div class="modal-footer" style="margin-top: 20px;">
                 <button id="close-management-btn" class="secondary-btn">Đóng</button>
             </div>
         </div>
     </div>
 
-    <!-- Settings Modal -->
-    <div id="settings-modal" class="modal">
-        <div class="modal-content glass-panel">
-            <h2>Cài đặt bảo mật</h2>
-            <div class="settings-group">
-                <label>Mật khẩu Admin (Tầng 1)</label>
-                <input type="password" id="new-admin-pass" placeholder="Mật khẩu mới...">
-            </div>
-            <div class="settings-group">
-                <label>Mật khẩu Bí mật (Tầng 2)</label>
-                <input type="password" id="new-secret-pass" placeholder="Mật khẩu cực bí mật...">
-            </div>
-            <div class="modal-footer">
-                <button id="save-settings-btn" class="primary-btn">Cập nhật tất cả</button>
-                <button id="close-settings-btn" class="secondary-btn">Hủy</button>
-            </div>
-            <p id="settings-msg" class="success-msg"></p>
-        </div>
-    </div>
-
     <!-- Custom Confirmation Modal -->
     <div id="confirmation-modal" class="modal">
         <div class="modal-content glass-panel" style="max-width: 400px;">
@@ -129,20 +148,8 @@
         </div>
     </div>
 
-    <!-- Custom Confirmation Modal -->
-    <div id="confirmation-modal" class="modal">
-        <div class="modal-content glass-panel" style="max-width: 400px;">
-            <h2>Xác nhận</h2>
-            <p id="confirm-modal-msg" style="margin: 20px 0;"></p>
-            <div class="modal-footer">
-                <button id="confirm-yes-btn" class="primary-btn">Đồng ý</button>
-                <button id="confirm-no-btn" class="secondary-btn">Hủy</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Script Load -->
     <script src="node_modules/face-api.js/dist/face-api.min.js"></script>
     <script src="renderer.js"></script>
 </body>
+
 </html>
