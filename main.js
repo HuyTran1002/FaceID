@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const https = require('https');
+const http = require('http');
 const { spawn } = require('child_process');
 const readline = require('readline');
 const { PythonShell } = require('python-shell');
@@ -340,7 +341,7 @@ function checkAndDownloadUpdate() {
                         showSystemToast("Lỗi cập nhật", "Không tìm thấy file EXE trong bản phát hành mới.");
                     }
                 } else {
-                    showSystemToast("Thông báo", "Bạn đang sử dụng phiên bản mới nhất (v" + packageJson.version + ").");
+                    if (mainWindow) mainWindow.webContents.send('update-not-available', "Bạn đang sử dụng phiên bản mới nhất (v" + packageJson.version + ").");
                 }
             } catch (e) {
                 showSystemToast("Lỗi cập nhật", "Dữ liệu trả về từ GitHub không hợp lệ.");
@@ -352,76 +353,132 @@ function checkAndDownloadUpdate() {
 }
 
 function installUpdate(downloadUrl) {
-    const tempDir = os.tmpdir();
-    const tempExePath = path.join(tempDir, 'FaceID_Update.exe');
-    const updateBatPath = path.join(tempDir, 'faceid_install.bat');
+    if (!app.isPackaged) {
+        mainWindow.webContents.send('update-error', 'Không thể cập nhật trong môi trường Develop.');
+        return;
+    }
 
-    const file = fs.createWriteStream(tempExePath);
+    // Xác định thư mục chứa file EXE gốc mà user đang chạy
+    const portableExe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+    const appDir = path.dirname(portableExe);
+    const oldFileName = path.basename(portableExe);
 
-    const downloadFile = (url) => {
-        https.get(url, (res) => {
+    // Tải file mới về CÙNG thư mục, đặt tên theo version từ GitHub
+    // Tạm dùng tên cố định, sẽ được rename nếu cần
+    const newExePath = path.join(appDir, 'FaceID_Security_NEW.exe');
+
+    // Xóa file tải dở nếu có từ lần trước
+    try { if (fs.existsSync(newExePath)) fs.unlinkSync(newExePath); } catch(e) {}
+
+    // Hàm download có thể follow cả HTTP lẫn HTTPS redirect
+    const downloadFollowRedirect = (url, redirectCount = 0) => {
+        if (redirectCount > 5) {
+            mainWindow.webContents.send('update-error', 'Quá nhiều redirect, hủy tải.');
+            return;
+        }
+
+        const protocol = url.startsWith('https') ? https : http;
+        const request = protocol.get(url, { headers: { 'User-Agent': 'FaceID-AutoUpdater' } }, (res) => {
+            // Redirect: drain response cũ rồi follow
             if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-                downloadFile(res.headers.location);
-                return;
-            }
-            if (res.statusCode !== 200) {
-                mainWindow.webContents.send('update-error', 'Lỗi server tải xuống: ' + res.statusCode);
+                res.resume();
+                downloadFollowRedirect(res.headers.location, redirectCount + 1);
                 return;
             }
 
-            const totalBytes = parseInt(res.headers['content-length'], 10);
+            if (res.statusCode !== 200) {
+                mainWindow.webContents.send('update-error', 'Lỗi HTTP khi tải: ' + res.statusCode);
+                return;
+            }
+
+            const totalBytes = parseInt(res.headers['content-length'], 10) || 0;
             let downloadedBytes = 0;
+            const file = fs.createWriteStream(newExePath);
 
             res.on('data', (chunk) => {
                 downloadedBytes += chunk.length;
-                let percent = Math.round((downloadedBytes / totalBytes) * 100);
-                mainWindow.webContents.send('update-progress', percent);
+                if (totalBytes > 0) {
+                    const percent = Math.round((downloadedBytes / totalBytes) * 100);
+                    mainWindow.webContents.send('update-progress', Math.min(percent, 99));
+                }
             });
 
             res.pipe(file);
 
-            file.on('finish', () => {
-                file.close();
-                mainWindow.webContents.send('update-progress', 100);
-                
-                // Construct the autonomous script
-                let currentExe = process.execPath;
-                // If running in Dev (unpacked), we shouldn't replace electron.exe!
-                if (!app.isPackaged) {
-                    mainWindow.webContents.send('update-error', 'Không thể cài bản Update trong môi trường Develop.');
-                    return;
-                }
-
-                // Delay 2 sec, suicide current file, replace with temp file, re-run, suicide bat file.
-                const batContent = `
-@echo off
-echo Dang ap dung phien ban moi nhat...
-timeout /t 2 /nobreak > NUL
-del "${currentExe}"
-copy /Y "${tempExePath}" "${currentExe}"
-start "" "${currentExe}"
-del "${updateBatPath}"
-`;
-                fs.writeFileSync(updateBatPath, batContent);
-                
-                // Detach cmd runner
-                const updaterProc = spawn('cmd.exe', ['/c', updateBatPath], {
-                    detached: true,
-                    stdio: 'ignore',
-                    windowsHide: true
-                });
-                updaterProc.unref();
-                
-                // Shutdown cleanly to release the lock
-                app.quit();
+            file.on('error', (err) => {
+                mainWindow.webContents.send('update-error', 'Lỗi ghi file: ' + err.message);
             });
-        }).on('error', (err) => {
-            fs.unlink(tempExePath, () => {});
-            mainWindow.webContents.send('update-error', 'Lỗi đường truyền: ' + err.message);
+
+            file.on('finish', () => {
+                file.close(() => {
+                    // Kiểm tra sanity: file phải > 10MB mới là EXE hợp lệ
+                    try {
+                        const stats = fs.statSync(newExePath);
+                        if (stats.size < 10 * 1024 * 1024) {
+                            mainWindow.webContents.send('update-error',
+                                `File tải về quá nhỏ (${(stats.size / 1024).toFixed(0)} KB). Release có thể chưa đính kèm EXE.`);
+                            return;
+                        }
+                    } catch (e) {
+                        mainWindow.webContents.send('update-error', 'Không thể kiểm tra file: ' + e.message);
+                        return;
+                    }
+
+                    mainWindow.webContents.send('update-progress', 100);
+
+                    // ĐƠN GIẢN: Xóa file cũ bằng batch chờ app tắt, rename file mới thành tên cũ, rồi mở lại
+                    const batPath = path.join(appDir, '_faceid_update.bat');
+                    const batContent = [
+                        '@echo off',
+                        'title FaceID Updater',
+                        'echo Dang cap nhat FaceID Security...',
+                        'echo.',
+                        'echo Cho ung dung dong lai...',
+                        // Chờ đến khi file cũ không còn bị lock (thử xóa liên tục)
+                        ':RETRY',
+                        `del /f /q "${portableExe}" 2>nul`,
+                        `if exist "${portableExe}" (`,
+                        '  timeout /t 1 /nobreak >nul',
+                        '  goto RETRY',
+                        ')',
+                        'echo File cu da duoc xoa.',
+                        // Rename file mới thành tên file cũ
+                        `rename "${newExePath}" "${oldFileName}"`,
+                        'echo Da thay the thanh cong!',
+                        'echo Dang khoi dong lai...',
+                        // Mở file mới (đã được rename)
+                        `start "" "${portableExe}"`,
+                        // Tự xóa file batch
+                        `del /f /q "${batPath}"`,
+                    ].join('\r\n');
+
+                    fs.writeFileSync(batPath, batContent, 'ascii');
+
+                    // Spawn cmd.exe detached để batch chạy độc lập hoàn toàn
+                    const batProc = spawn('cmd.exe', ['/c', batPath], {
+                        detached: true,
+                        stdio: 'ignore',
+                        windowsHide: false  // Hiện cửa sổ CMD để user theo dõi
+                    });
+                    batProc.unref();
+
+                    // Chờ 800ms để batch kịp spawn xong rồi mới thoát
+                    setTimeout(() => {
+                        isLocked = false;
+                        globalShortcut.unregisterAll();
+                        if (pyProcess) pyProcess.kill();
+                        app.exit(0);
+                    }, 800);
+                });
+            });
+        });
+
+        request.on('error', (err) => {
+            mainWindow.webContents.send('update-error', 'Lỗi kết nối: ' + err.message);
         });
     };
 
-    downloadFile(downloadUrl);
+    downloadFollowRedirect(downloadUrl);
 }
 
 ipcMain.on('start-update', (event, { downloadUrl }) => {

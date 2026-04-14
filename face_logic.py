@@ -21,7 +21,7 @@ import face_recognition
 
 # Initialize OpenCV Face Detector as fallback for extreme occlusions
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-angle_buffer = {"history": [], "max_len": 7}
+angle_buffer = {"history": [], "max_len": 3}  # 3 frames = 1.5s - đủ mượt, phản hồi nhanh
 
 try:
     if getattr(sys, 'frozen', False):
@@ -88,12 +88,28 @@ def load_registered_faces(user_data_path):
         return []
     except Exception: return []
 
+# In-memory cache để tránh đọc disk mỗi lần detect
+_face_cache = None
+_face_cache_path = None
+
+def load_faces_cached(user_data_path):
+    global _face_cache, _face_cache_path
+    if _face_cache is None or _face_cache_path != user_data_path:
+        _face_cache = load_registered_faces(user_data_path)
+        _face_cache_path = user_data_path
+    return _face_cache
+
+def invalidate_cache():
+    global _face_cache
+    _face_cache = None
+
 def save_registered_faces(user_data_path, faces):
     try:
         if not os.path.exists(user_data_path): os.makedirs(user_data_path, exist_ok=True)
         reg_path = os.path.join(user_data_path, 'registered_face.json')
         with open(reg_path, 'w', encoding='utf-8') as f:
             json.dump(faces, f, ensure_ascii=False)
+        invalidate_cache()  # Luôn reset cache sau khi ghi
     except Exception as e:
         print(json.dumps({"success": False, "error": f"Save failed: {str(e)}"}))
 
@@ -173,6 +189,11 @@ def process_image():
                 sys.stdout.flush()
                 continue
 
+            if mode == 'reset_buffer':
+                angle_buffer["history"] = []  # Xóa ngay toàn bộ lịch sử góc
+                sys.stdout.flush()
+                continue
+
             if mode in ['list', 'delete']:
                 if mode == 'list': print(json.dumps({"faces": load_registered_faces(user_data_path)}))
                 else:
@@ -217,7 +238,7 @@ def process_image():
                 face_locations = get_face_locations_from_mesh(detection_result.face_landmarks[0], w, h)
                 current_3d_ratio = calculate_3d_ratio(detection_result.face_landmarks[0])
             
-            registered_faces = load_registered_faces(user_data_path)
+            registered_faces = load_faces_cached(user_data_path)
 
             if mode == 'register':
                 encodings = face_recognition.face_encodings(rgb_img, face_locations)
@@ -232,7 +253,7 @@ def process_image():
                         for ang, enc in other_user.get("angles", {}).items():
                             dist = face_recognition.face_distance([np.array(enc)], current_encoding)[0]
                             # Hạ thấp ngưỡng báo trùng lặp trong môi trường phòng sạch (masked) để phân biệt các cá nhân
-                            duplicate_threshold = 0.35 if is_masked_mode else 0.43
+                            duplicate_threshold = 0.38 if is_masked_mode else 0.45  # Đồng nhất với ngưỡng unlock
                             if dist < duplicate_threshold:
                                 # Xóa ngay lập tức hồ sơ đang bị lưu dở dang (rácccc)
                                 registered_faces = [f for f in registered_faces if f['name'] != face_name]
@@ -265,7 +286,7 @@ def process_image():
                 if encodings:
                     current_encoding = encodings[0].tolist()
                     best_match, min_dist = None, 1.0
-                    base_threshold = 0.48 if is_masked_mode else 0.43
+                    base_threshold = 0.50 if is_masked_mode else 0.45  # Tăng ngưỡng chấp nhận để giảm từ chối sai khi ánh sáng thay đổi
 
                     for f in registered_faces:
                         for ang, enc in f.get("angles", {}).items():
@@ -276,9 +297,12 @@ def process_image():
                                 reg_ratio = f.get("ratios", {}).get(ang, 1.0)
                                 ratio_diff = abs(current_3d_ratio - reg_ratio)
                             
-                            if dist < min_dist and ratio_diff < 0.06:
-                                min_dist = dist
-                                best_match = f['name']
+                            if dist < min_dist and ratio_diff < 0.08:  # Tăng ngưỡng ratio_diff để giảm từ chối sai
+                                # Ưu tiên góc khớp với hướng hiện tại (giảm 5% khoảng cách ảo)
+                                effective_dist = dist * (0.95 if ang == direction else 1.0)
+                                if effective_dist < min_dist:
+                                    min_dist = effective_dist
+                                    best_match = f['name']
                     
                     if best_match and min_dist < base_threshold:
                         print(json.dumps({"success": True, "match": best_match, "direction": direction, "masked": is_masked_mode}))
