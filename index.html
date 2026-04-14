@@ -148,6 +148,28 @@
         </div>
     </div>
 
+    <!-- Update Modal -->
+    <div id="update-modal" class="modal">
+        <div class="modal-content glass-panel" style="max-width: 450px;">
+            <h2>⚡ Cập Nhật Hệ Thống</h2>
+            <div style="margin: 20px 0; text-align: left;">
+                <p id="update-version-text" style="font-size: 1.1em; color: #00f2ff; margin-bottom: 10px;">Phát hiện bản mới!</p>
+                <p id="update-notes-text" style="color: #ccc; font-size: 0.9em; max-height: 80px; overflow-y: auto;"></p>
+                
+                <div id="update-progress-container" style="display: none; margin-top: 20px;">
+                    <p id="update-status-text">Đang tải xuống...</p>
+                    <div style="width: 100%; background: rgba(255,255,255,0.1); height: 10px; border-radius: 5px; overflow: hidden; margin-top: 5px;">
+                        <div id="update-progress-bar" style="width: 0%; height: 100%; background: #00f2ff; transition: width 0.2s;"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer" id="update-footer">
+                <button id="update-yes-btn" class="primary-btn">Tải & Cài Đặt Khép Kín</button>
+                <button id="update-no-btn" class="secondary-btn">Bỏ Qua</button>
+            </div>
+        </div>
+    </div>
+
     <script src="node_modules/face-api.js/dist/face-api.min.js"></script>
     <script src="renderer.js"></script>
 </body>

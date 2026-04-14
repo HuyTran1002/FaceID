@@ -219,10 +219,10 @@ ipcRenderer.on('python-result', (event, result) => {
     }
 
     if (result.status === "duplicate") {
-        addLog(`CẢNH BÁO: Khuôn mặt đã đăng ký cho [${result.match_name}]`, 'error');
+        addLog(`CẢNH BÁO: Khuôn mặt ĐÃ TRÙNG KHỚP CAO với [${result.match_name}]`, 'error');
         stopCamera();
         switchToLockScreen();
-        showNotification(`Khuôn mặt này đã được đăng ký trong hệ thống cho người dùng: ${result.match_name}`);
+        showNotification(`Hệ thống từ chối đăng ký do đặc trưng khuôn mặt (hoặc vùng mắt) của bạn trùng khớp rất cao với hồ sơ của: ${result.match_name}`);
         return;
     }
 
@@ -236,7 +236,7 @@ ipcRenderer.on('python-result', (event, result) => {
             const capturedDirections = result.all_angles || [];
             updateGuideUI(capturedDirections);
 
-            if (capturedDirections.length >= 5) {
+            if (capturedDirections.length >= 5 || capturedDirections.includes('center_masked')) {
                 addLog("Chúc mừng! Đã hoàn tất bản đồ 3D khuôn mặt.", 'success');
                 document.getElementById('guide-check').classList.add('show');
                 isPythonRegistered = true;
