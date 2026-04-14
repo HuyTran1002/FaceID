@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, screen, globalShortcut, dialog } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, screen, globalShortcut, dialog, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -291,6 +291,22 @@ ipcMain.on('check-registration-status', (event) => {
     event.reply('registration-status-result', { hasPythonReg });
 });
 // --- AUTO UPDATE ENGINE ---
+function isNewerVersion(latest, current) {
+    const l = latest.split('.').map(Number);
+    const c = current.split('.').map(Number);
+    for (let i = 0; i < 3; i++) {
+        if (l[i] > (c[i] || 0)) return true;
+        if (l[i] < (c[i] || 0)) return false;
+    }
+    return false;
+}
+
+function showSystemToast(title, body) {
+    if (Notification.isSupported()) {
+        new Notification({ title, body, icon: path.join(__dirname, 'assets/icon.png') }).show();
+    }
+}
+
 function checkAndDownloadUpdate() {
     const options = {
         hostname: 'api.github.com',
@@ -311,7 +327,7 @@ function checkAndDownloadUpdate() {
                 const release = JSON.parse(data);
                 const latestVersion = release.tag_name.replace('v', '');
                 
-                if (latestVersion !== packageJson.version) {
+                if (isNewerVersion(latestVersion, packageJson.version)) {
                     const exeAsset = release.assets.find(a => a.name.endsWith('.exe'));
                     if (exeAsset) {
                         mainWindow.show();
@@ -321,20 +337,17 @@ function checkAndDownloadUpdate() {
                             releaseNotes: release.body || "Bản cập nhật mới giúp tăng cường bảo mật."
                         });
                     } else {
-                        if (mainWindow) mainWindow.webContents.send('update-error', 'Bản cập nhật không đính kèm file thưc thi EXE.');
+                        showSystemToast("Lỗi cập nhật", "Không tìm thấy file EXE trong bản phát hành mới.");
                     }
                 } else {
-                    if (mainWindow) {
-                        mainWindow.show();
-                        mainWindow.webContents.send('update-not-available');
-                    }
+                    showSystemToast("Thông báo", "Bạn đang sử dụng phiên bản mới nhất (v" + packageJson.version + ").");
                 }
             } catch (e) {
-                if (mainWindow) mainWindow.webContents.send('update-error', 'Lỗi xử lý Data GitHub.');
+                showSystemToast("Lỗi cập nhật", "Dữ liệu trả về từ GitHub không hợp lệ.");
             }
         });
     }).on('error', (e) => {
-        if (mainWindow) mainWindow.webContents.send('update-error', e.message);
+        showSystemToast("Lỗi cập nhật", "Không thể kết nối với GitHub. Vui lòng kiểm tra lại mạng.");
     });
 }
 
