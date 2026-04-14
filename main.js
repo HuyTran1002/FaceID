@@ -189,11 +189,10 @@ function lockApp() {
     mainWindow.setAlwaysOnTop(true, 'screen-saver');
 
     // Chặn các phím thoát hiểm
-    globalShortcut.register('Alt+Tab', () => { return false; });
-    globalShortcut.register('Super', () => { return false; });
-    globalShortcut.register('CommandOrControl+Esc', () => { return false; });
-    globalShortcut.register('Alt+F4', () => { return false; });
-    globalShortcut.register('CommandOrControl+W', () => { return false; });
+    try { globalShortcut.register('Alt+Tab', () => { return false; }); } catch (e) {}
+    try { globalShortcut.register('CommandOrControl+Esc', () => { return false; }); } catch (e) {}
+    try { globalShortcut.register('Alt+F4', () => { return false; }); } catch (e) {}
+    try { globalShortcut.register('CommandOrControl+W', () => { return false; }); } catch (e) {}
 
     mainWindow.webContents.send('app-locked');
 }
@@ -206,11 +205,10 @@ function unlockApp() {
     mainWindow.hide();
 
     // Mở khóa các phím thoát hiểm
-    globalShortcut.unregister('Alt+Tab');
-    globalShortcut.unregister('Super');
-    globalShortcut.unregister('CommandOrControl+Esc');
-    globalShortcut.unregister('Alt+F4');
-    globalShortcut.unregister('CommandOrControl+W');
+    try { globalShortcut.unregister('Alt+Tab'); } catch (e) {}
+    try { globalShortcut.unregister('CommandOrControl+Esc'); } catch (e) {}
+    try { globalShortcut.unregister('Alt+F4'); } catch (e) {}
+    try { globalShortcut.unregister('CommandOrControl+W'); } catch (e) {}
 
     mainWindow.webContents.send('app-unlocked');
 }
