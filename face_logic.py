@@ -210,8 +210,13 @@ def process_image():
                     if other_user['name'] != face_name:
                         for ang, enc in other_user.get("angles", {}).items():
                             dist = face_recognition.face_distance([np.array(enc)], current_encoding)[0]
-                            duplicate_threshold = 0.48 if is_masked_mode else 0.43
+                            # Hạ thấp ngưỡng báo trùng lặp trong môi trường phòng sạch (masked) để phân biệt các cá nhân
+                            duplicate_threshold = 0.35 if is_masked_mode else 0.43
                             if dist < duplicate_threshold:
+                                # Xóa ngay lập tức hồ sơ đang bị lưu dở dang (rácccc)
+                                registered_faces = [f for f in registered_faces if f['name'] != face_name]
+                                save_registered_faces(user_data_path, registered_faces)
+                                
                                 print(json.dumps({"success": False, "status": "duplicate", "match_name": other_user['name']}))
                                 sys.stdout.flush(); break
                         else: continue
