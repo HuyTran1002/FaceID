@@ -4,6 +4,7 @@ import json
 import base64
 import uuid
 from datetime import datetime
+import keyboard
 
 # --- PING INSTANTLY FOR UI (Startup Speed Optimization) ---
 # Tín hiệu giả lập bật AI sẽ bắn thẳng vào Nodejs trước khi các tệp lớn được nhập vào.
@@ -151,6 +152,26 @@ def process_image():
             image_b64 = input_data.get('image_data')
             face_name = input_data.get('faceName', 'User')
             user_data_path = input_data.get('user_data_path', '.')
+
+            if mode == 'lock_keys':
+                try:
+                    keyboard.block_key('windows')
+                    keyboard.block_key('left windows')
+                    keyboard.block_key('right windows')
+                    print(json.dumps({"success": True, "status": "keys_locked"}))
+                except Exception as e:
+                    print(json.dumps({"success": False, "status": "keys_locked_error", "message": str(e)}))
+                sys.stdout.flush()
+                continue
+            
+            if mode == 'unlock_keys':
+                try:
+                    keyboard.unhook_all()
+                    print(json.dumps({"success": True, "status": "keys_unlocked"}))
+                except Exception:
+                    pass
+                sys.stdout.flush()
+                continue
 
             if mode in ['list', 'delete']:
                 if mode == 'list': print(json.dumps({"faces": load_registered_faces(user_data_path)}))
