@@ -188,7 +188,13 @@ function lockApp() {
     mainWindow.setKiosk(true);
     mainWindow.setAlwaysOnTop(true, 'screen-saver');
 
+    // Khóa phím qua Python (Windows key, etc)
+    const lockData = { mode: 'lock_keys' };
+    if (app.isPackaged && pyProcess && !pyProcess.killed) pyProcess.stdin.write(JSON.stringify(lockData) + '\n');
+    else if (pyshell) pyshell.send(lockData);
+
     // Chặn các phím thoát hiểm
+
     try { globalShortcut.register('Alt+Tab', () => { return false; }); } catch (e) {}
     try { globalShortcut.register('CommandOrControl+Esc', () => { return false; }); } catch (e) {}
     try { globalShortcut.register('Alt+F4', () => { return false; }); } catch (e) {}
@@ -203,6 +209,11 @@ function unlockApp() {
     mainWindow.setAlwaysOnTop(false);
     mainWindow.setFullScreen(false);
     mainWindow.hide();
+
+    // Mở khóa phím qua Python
+    const unlockData = { mode: 'unlock_keys' };
+    if (app.isPackaged && pyProcess && !pyProcess.killed) pyProcess.stdin.write(JSON.stringify(unlockData) + '\n');
+    else if (pyshell) pyshell.send(unlockData);
 
     // Mở khóa các phím thoát hiểm
     try { globalShortcut.unregister('Alt+Tab'); } catch (e) {}
