@@ -46,6 +46,7 @@ let isPythonRegistered = false;
 let pythonReady = false;
 let isCapturingAngle = false; // COOLDOWN FLAG
 let registrationStarted = false; // NEW SESSION FLAG
+let _unlockPending = false; // Flag để xử lý race condition unlock
 
 let currentGuideStepIdx = 0;
 const guideSteps = ['center', 'left', 'right', 'up', 'down'];
@@ -255,9 +256,16 @@ ipcRenderer.on('python-result', (event, result) => {
                         }
                     }
                     updateGuideUI(capturedDirections);
+
+                    // QUAN TRỌNG: Xóa angle_buffer cũ trong Python để nhận diện hướng mới ngay lập tức
+                    ipcRenderer.send('process-image-python', { mode: 'reset_buffer', image_data: '', user_data_path: '' });
+
                     isCapturingAngle = false;
-                    scanStatusMsg.innerText = "Đang quét môi trường 3D...";
+                    const nextStep = guideSteps[currentGuideStepIdx];
+                    scanStatusMsg.innerText = `Chuẩn bị: ${guideStepLabels[nextStep] || 'Đang hoàn tất...'}`;
+                    scanStatusMsg.style.color = '#aaddff';
                 }, 1500);
+
             }
         }
         return;
@@ -333,14 +341,8 @@ function switchToLockScreen() {
 
 // --- EVENT LISTENERS ---
 document.getElementById('unlock-btn').addEventListener('click', () => {
+    _unlockPending = true;
     ipcRenderer.send('check-registration-status');
-    setTimeout(() => {
-        if (!isPythonRegistered) {
-            showNotification("Bạn chưa đăng ký khuôn mặt nào!");
-            return;
-        }
-        switchToScanScreen(false);
-    }, 100);
 });
 
 document.getElementById('register-btn').addEventListener('click', () => {
@@ -488,6 +490,11 @@ setInterval(updateClock, 1000); updateClock();
 // App Shortcuts & Initialization
 ipcRenderer.on('registration-status-result', (event, status) => {
     isPythonRegistered = status.hasPythonReg;
+    if (_unlockPending) {
+        _unlockPending = false;
+        if (!isPythonRegistered) showNotification("Bạn chưa đăng ký khuôn mặt nào!");
+        else switchToScanScreen(false);
+    }
 });
 
 function showExitPrompt() {
@@ -510,3 +517,55 @@ ipcRenderer.on('app-locked', () => switchToLockScreen());
 
 ipcRenderer.send('check-registration-status');
 addLog("Hệ thống FaceID 3D Pro đang khởi tạo...");
+
+// --- AUTO UPDATE UI SYSTEM ---
+const updateModal = document.getElementById('update-modal');
+const updateVersionText = document.getElementById('update-version-text');
+const updateNotesText = document.getElementById('update-notes-text');
+const updateProgressContainer = document.getElementById('update-progress-container');
+const updateProgressBar = document.getElementById('update-progress-bar');
+const updateStatusText = document.getElementById('update-status-text');
+const updateFooter = document.getElementById('update-footer');
+const updateYesBtn = document.getElementById('update-yes-btn');
+const updateNoBtn = document.getElementById('update-no-btn');
+
+let currentDownloadUrl = null;
+
+ipcRenderer.on('update-available', (event, { version, downloadUrl, releaseNotes }) => {
+    currentDownloadUrl = downloadUrl;
+    updateModal.classList.add('active');
+    updateVersionText.innerText = `Phát hiện phiên bản mới: v${version}`;
+    updateNotesText.innerText = releaseNotes;
+    updateProgressContainer.style.display = 'none';
+    updateFooter.style.display = 'flex';
+});
+
+ipcRenderer.on('update-not-available', (event, message) => {
+    showNotification(message); // Hiển thị modal thông báo thay vì toast
+});
+
+ipcRenderer.on('update-progress', (event, percent) => {
+    updateProgressContainer.style.display = 'block';
+    updateFooter.style.display = 'none';
+    updateProgressBar.style.width = `${percent}%`;
+    updateStatusText.innerText = percent < 100 ? `Đang tải xuống... ${percent}%` : "Mọi thứ đã xong, đang chuẩn bị thay thế...";
+});
+
+ipcRenderer.on('update-error', (event, message) => {
+    showNotification("Lỗi cập nhật: " + message);
+    updateModal.classList.remove('active');
+});
+
+if (updateYesBtn) {
+    updateYesBtn.addEventListener('click', () => {
+        if (currentDownloadUrl) {
+            ipcRenderer.send('start-update', { downloadUrl: currentDownloadUrl });
+        }
+    });
+}
+
+if (updateNoBtn) {
+    updateNoBtn.addEventListener('click', () => {
+        updateModal.classList.remove('active');
+    });
+}
