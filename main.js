@@ -1,4 +1,11 @@
 const { app, BrowserWindow, Tray, Menu, ipcMain, screen, globalShortcut, dialog, Notification } = require('electron');
+
+// Chế độ Tương thích Tuyệt đối (v1.1.32) - Khôi phục Camera & Ổn định UI
+app.commandLine.appendSwitch('disable-gpu');
+app.commandLine.appendSwitch('disable-software-rasterizer');
+app.commandLine.appendSwitch('disable-gpu-compositing');
+app.commandLine.appendSwitch('no-sandbox');
+
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -13,12 +20,145 @@ let mainWindow;
 let tray = null;
 let isLocked = true;
 let pythonExit = false;
+let keyGuardProcess = null;
+
+// --- SILENT KEYGUARD PLUS (C# Sidecar Source) v3.1.5 ---
+const KEYGUARD_SOURCE = `
+using System;
+using System.Runtime.InteropServices;
+using System.Windows.Forms;
+using System.Diagnostics;
+
+class KeyGuard {
+    private const int WH_KEYBOARD_LL = 13;
+    private const int WM_KEYDOWN = 0x0100;
+    private const int WM_SYSKEYDOWN = 0x0104;
+    private const int VK_LWIN = 0x5B;
+    private const int VK_RWIN = 0x5C;
+    private const int VK_TAB = 0x09;
+    private const int LLKHF_ALTDOWN = 0x20;
+
+    private static LowLevelKeyboardProc _proc = HookCallback;
+    private static IntPtr _hookID = IntPtr.Zero;
+
+    public static void Main() {
+        _hookID = SetHook(_proc);
+        Application.Run();
+        UnhookWindowsHookEx(_hookID);
+    }
+
+    private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+    private static IntPtr SetHook(LowLevelKeyboardProc proc) {
+        using (Process curProcess = Process.GetCurrentProcess())
+        using (ProcessModule curModule = curProcess.MainModule) {
+            return SetWindowsHookEx(WH_KEYBOARD_LL, proc, GetModuleHandle(curModule.ModuleName), 0);
+        }
+    }
+
+    private static IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam) {
+        if (nCode >= 0 && (wParam == (IntPtr)WM_KEYDOWN || wParam == (IntPtr)WM_SYSKEYDOWN)) {
+            KBDLLHOOKSTRUCT hs = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(KBDLLHOOKSTRUCT));
+            
+            // Chặn phím Windows
+            if (hs.vkCode == VK_LWIN || hs.vkCode == VK_RWIN) return (IntPtr)1;
+
+            // Chặn Alt + Tab (v3.1.5)
+            if (hs.vkCode == VK_TAB && (hs.flags & LLKHF_ALTDOWN) != 0) return (IntPtr)1;
+        }
+        return CallNextHookEx(_hookID, nCode, wParam, lParam);
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KBDLLHOOKSTRUCT {
+        public int vkCode;
+        public int scanCode;
+        public int flags;
+        public int time;
+        public IntPtr dwExtraInfo;
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    private static extern IntPtr GetModuleHandle(string lpModuleName);
+}
+`;
+
+function compileKeyGuard() {
+    if (process.platform !== 'win32') return;
+    const tempPath = app.getPath('userData');
+    const sourcePath = path.join(tempPath, 'KeyGuard.cs');
+    const exePath = path.join(tempPath, 'KeyGuard.exe');
+
+    fs.writeFileSync(sourcePath, KEYGUARD_SOURCE);
+    
+    const cscPath = 'C:\\\\Windows\\\\Microsoft.NET\\\\Framework64\\\\v4.0.30319\\\\csc.exe';
+    if (fs.existsSync(cscPath)) {
+        const compile = spawn(cscPath, ['/target:winexe', `/out:${exePath}`, sourcePath], { shell: true });
+        compile.on('close', (code) => {
+            if (code === 0) logToFile("KeyGuard Compiled Successfully.");
+            else logToFile("KeyGuard Compilation Failed with code: " + code);
+        });
+    } else {
+        logToFile("CSC.EXE NOT FOUND. KeyGuard will not be available.");
+    }
+}
+
+function manageKeyGuard(enable) {
+    if (process.platform !== 'win32') return;
+    const exePath = path.join(app.getPath('userData'), 'KeyGuard.exe');
+
+    if (enable) {
+        if (fs.existsSync(exePath) && !keyGuardProcess) {
+            keyGuardProcess = spawn(exePath, [], { windowsHide: true });
+            logToFile("KeyGuard Activated.");
+        }
+    } else {
+        if (keyGuardProcess) {
+            keyGuardProcess.kill();
+            keyGuardProcess = null;
+            logToFile("KeyGuard Deactivated.");
+        }
+    }
+}
+
+const crypto = require('crypto');
+
+function hashPassword(password) {
+    if (!password) return '';
+    return crypto.createHash('sha256').update(password).digest('hex');
+}
+
+function verifyPassword(input, storedHash) {
+    // Migration logic (v3.1.0): Support both plain-text (old) and hashed (new)
+    if (storedHash.length !== 64) {
+        // Old password detected
+        if (input === storedHash) {
+            // Auto-migrate to hash
+            config.adminPass = hashPassword(config.adminPass);
+            config.secretPass = hashPassword(config.secretPass);
+            saveConfig();
+            return true;
+        }
+        return false;
+    }
+    return hashPassword(input) === storedHash;
+}
 
 // Config Management (Passwords)
 const configPath = path.join(app.getPath('userData'), 'config.json');
 let config = {
-    adminPass: '123456',
-    secretPass: '999999'
+    adminPass: '8d969eef6ecad3c29a3a629280e686cf0c3f5d5a86aff3ca12020c923adc6c92',
+    secretPass: '983637e6f854ca68c8b677a83d7249b0eb23e3e0ff4864115e5899982759e51c'
 };
 
 function loadConfig() {
@@ -68,8 +208,10 @@ function initPython() {
         if (app.isPackaged) {
             // PROD - Run from bundled Executable
             const exePath = path.join(process.resourcesPath, 'python_core', 'face_logic', 'face_logic.exe');
+            logToFile("Attempting to start AI EXE at: " + exePath);
+            
             if (fs.existsSync(exePath)) {
-                // console.log("Khởi động Production AI Core (EXE)...");
+                logToFile("AI EXE Found. Spawning process...");
                 pyProcess = spawn(exePath, [], {
                     stdio: ['pipe', 'pipe', 'pipe'],
                     windowsHide: true,
@@ -83,21 +225,28 @@ function initPython() {
 
                 rl.on('line', (line) => {
                     if (line.trim()) {
+                        logToFile("AI RAW: " + line); // Ghi lại mọi thứ v2.9.0
                         try {
                             const result = JSON.parse(line);
+                            if (result.status === "READY") logToFile("AI ENGINE SIGNALED READY.");
                             if (mainWindow) mainWindow.webContents.send('python-result', result);
                         } catch (e) {
-                            console.log('AI PARSE ERR:', line);
+                            logToFile('AI JSON PARSE ERR: ' + line);
                         }
                     }
                 });
 
-                // Tắt log debug từ backend
-                // pyProcess.stderr.on('data', (data) => console.log('AI DEBUG:', data.toString()));
-                pyProcess.on('error', (err) => console.error('AI EXE ERR:', err));
+                pyProcess.on('error', (err) => {
+                    logToFile('AI SPAWN ERROR: ' + err.message);
+                });
+
+                pyProcess.stderr.on('data', (data) => {
+                    logToFile('AI STDERR: ' + data.toString());
+                });
+
                 return;
             } else {
-                console.error("Critical: Không tìm thấy face_logic.exe trong resourcesPath");
+                logToFile("CRITICAL: AI EXE NOT FOUND at " + exePath);
             }
         }
         
@@ -112,14 +261,22 @@ function initPython() {
         pyshell = new PythonShell('face_logic.py', pyOptions);
         
         pyshell.on('message', (message) => {
+            console.log('[AI OUTPUT]:', message); // LOG TO TERMINAL v2.1.3
             if (mainWindow) mainWindow.webContents.send('python-result', message);
         });
-        // pyshell.on('stderr', (stderr) => console.log('AI DEV DEBUG:', stderr));
+        pyshell.on('stderr', (stderr) => console.log('AI DEV DEBUG:', stderr));
         pyshell.on('error', (err) => console.error('AI DEV ERROR:', err));
         
     } catch (e) {
-        console.error("Failed to init AI Engine:", e);
+        logToFile("Failed to init AI Engine: " + e.message);
     }
+}
+
+// Hệ thống ghi log ra tệp để chẩn đoán bản Build (v2.8.7)
+function logToFile(msg) {
+    const logPath = path.join(app.getPath('userData'), 'debug_log.txt');
+    const timestamp = new Date().toISOString();
+    fs.appendFileSync(logPath, `[${timestamp}] ${msg}\n`);
 }
 
 function createWindow() {
@@ -136,7 +293,8 @@ function createWindow() {
         resizable: false,
         webPreferences: {
             nodeIntegration: true,
-            contextIsolation: false
+            contextIsolation: false,
+            backgroundThrottling: false // Ngăn AI bị dừng khi ẩn cửa sổ
         },
         icon: path.join(__dirname, 'assets/icon.png')
     });
@@ -194,7 +352,8 @@ function lockApp() {
     if (app.isPackaged && pyProcess && !pyProcess.killed) pyProcess.stdin.write(JSON.stringify(lockData) + '\n');
     else if (pyshell) pyshell.send(lockData);
 
-    // Chặn các phím thoát hiểm
+    // Chặn các phím thoát hiểm qua Sidecar (v3.1.5)
+    manageKeyGuard(true);
 
     try { globalShortcut.register('Alt+Tab', () => { return false; }); } catch (e) {}
     try { globalShortcut.register('CommandOrControl+Esc', () => { return false; }); } catch (e) {}
@@ -217,6 +376,7 @@ function unlockApp() {
     else if (pyshell) pyshell.send(unlockData);
 
     // Mở khóa các phím thoát hiểm
+    manageKeyGuard(false);
     try { globalShortcut.unregister('Alt+Tab'); } catch (e) {}
     try { globalShortcut.unregister('CommandOrControl+Esc'); } catch (e) {}
     try { globalShortcut.unregister('Alt+F4'); } catch (e) {}
@@ -226,6 +386,7 @@ function unlockApp() {
 }
 
 app.whenReady().then(() => {
+    compileKeyGuard();
     createWindow();
     createTray();
     initPython(); 
@@ -246,9 +407,23 @@ app.whenReady().then(() => {
 ipcMain.on('unlock-success', () => { unlockApp(); });
 ipcMain.on('request-lock', () => { lockApp(); });
 
+ipcMain.on('get-user-data-path', (event) => {
+    event.reply('user-data-path', app.getPath('userData'), config);
+});
+
+ipcMain.on('update-config', (event, newConfig) => {
+    // Tự động mã hóa mật khẩu nếu có thay đổi (v3.1.0)
+    if (newConfig.adminPass) newConfig.adminPass = hashPassword(newConfig.adminPass);
+    if (newConfig.secretPass) newConfig.secretPass = hashPassword(newConfig.secretPass);
+    
+    config = { ...config, ...newConfig };
+    saveConfig();
+    event.reply('config-updated', { success: true });
+});
+
 ipcMain.on('update-settings', (event, { newAdminPass, newSecretPass }) => {
-    if (newAdminPass) config.adminPass = newAdminPass;
-    if (newSecretPass) config.secretPass = newSecretPass;
+    if (newAdminPass) config.adminPass = hashPassword(newAdminPass);
+    if (newSecretPass) config.secretPass = hashPassword(newSecretPass);
     saveConfig();
     event.reply('update-settings-result', { success: true });
 });
@@ -256,21 +431,22 @@ ipcMain.on('update-settings', (event, { newAdminPass, newSecretPass }) => {
 ipcMain.on('verify-password', (event, { password, type }) => {
     let isValid = false;
     if (type === 'admin') {
-        isValid = (password === config.adminPass || password === config.secretPass);
+        isValid = verifyPassword(password, config.adminPass) || verifyPassword(password, config.secretPass);
     } else if (type === 'secret') {
-        isValid = (password === config.secretPass);
+        isValid = verifyPassword(password, config.secretPass);
     }
     event.reply('verify-password-result', { isValid, type });
 });
 
 ipcMain.on('exit-app-verified', () => {
     isLocked = false;
+    manageKeyGuard(false);
     globalShortcut.unregisterAll();
     if (pyProcess) pyProcess.kill();
     app.exit(0);
 });
 
-ipcMain.on('process-image-python', (event, data) => {
+ipcMain.on('process-image', (event, data) => {
     data.user_data_path = app.getPath('userData');
     if (app.isPackaged && pyProcess && !pyProcess.killed) {
         pyProcess.stdin.write(JSON.stringify(data) + '\n');
@@ -281,12 +457,12 @@ ipcMain.on('process-image-python', (event, data) => {
 
 ipcMain.on('check-registration-status', (event) => {
     const userDataPath = app.getPath('userData');
-    const pythonRegPath = path.join(userDataPath, 'registered_face.json');
+    const pythonRegPath = path.join(userDataPath, 'faces_v2.json');
     let hasPythonReg = false;
     if (fs.existsSync(pythonRegPath)) {
         try {
             const data = JSON.parse(fs.readFileSync(pythonRegPath, 'utf8'));
-            hasPythonReg = Array.isArray(data) ? data.length > 0 : !!data.encoding;
+            hasPythonReg = Array.isArray(data) ? data.length > 0 : false;
         } catch(e) {}
     }
     event.reply('registration-status-result', { hasPythonReg });
@@ -485,7 +661,24 @@ ipcMain.on('start-update', (event, { downloadUrl }) => {
     installUpdate(downloadUrl);
 });
 
-app.on('window-all-closed', function () {
+app.on('before-quit', () => {
+    if (pyProcess) pyProcess.kill();
     if (pyshell) pyshell.end();
+    manageKeyGuard(false);
+    globalShortcut.unregisterAll();
+});
+
+app.on('window-all-closed', function () {
     if (process.platform !== 'darwin') app.quit();
+});
+// Tự động cấp quyền Camera (v2.8.7)
+app.on('web-contents-created', (event, contents) => {
+    contents.session.setPermissionCheckHandler((webContents, permission) => {
+        if (permission === 'media') return true;
+        return false;
+    });
+    contents.session.setPermissionRequestHandler((webContents, permission, callback) => {
+        if (permission === 'media') return callback(true);
+        callback(false);
+    });
 });
