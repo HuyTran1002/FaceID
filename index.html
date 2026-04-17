@@ -30,35 +30,63 @@
         </div>
     </div>
 
-    <!-- LOG CONSOLE (Đã được tắt theo yêu cầu) -->
-    <div id="scan-screen">
-        <div class="scan-container">
-            <video id="video" autoplay muted playsinline></video>
-            <canvas id="canvas"></canvas>
-
-            <div id="guide-ui" style="display: none;">
-                <div class="guide-container">
-                    <div id="guide-text" class="guide-step-text">Nhìn thẳng vào camera</div>
-                    <div id="arrow-up" class="guide-arrow"
-                        style="top: -30px; left: 50%; transform: translateX(-50%) rotate(-45deg);"></div>
-                    <div id="arrow-down" class="guide-arrow"
-                        style="bottom: -30px; left: 50%; transform: translateX(-50%) rotate(135deg);"></div>
-                    <div id="arrow-left" class="guide-arrow"
-                        style="left: -30px; top: 50%; transform: translateY(-50%) rotate(225deg);"></div>
-                    <div id="arrow-right" class="guide-arrow"
-                        style="right: -30px; top: 50%; transform: translateY(-50%) rotate(45deg);"></div>
+    <!-- HUD v4.0 VISION PRO SCAN SCREEN -->
+    <div id="scan-screen" class="scan-screen">
+        <!-- CENTRAL SCAN HUB -->
+        <div class="central-intel-hub">
+            <div class="camera-frame-box">
+                <video id="video" autoplay muted playsinline></video>
+                <canvas id="canvas"></canvas>
+                
+                <!-- HUD Overlays -->
+                <div class="hud-target-brackets"></div>
+                <div class="laser-scanner-line"></div>
+                
+                <div id="scan-info" class="floating-status-badge">
+                    <div id="scan-status-msg">INITIALIZING AI...</div>
+                    <div class="mini-progress-track">
+                        <div id="scan-progress-bar" style="width: 0%"></div>
+                    </div>
                 </div>
-                <div id="guide-check" class="guide-check">✅</div>
+            </div>
+        </div>
+
+        <!-- FLOATING PIP PANEL (TOP RIGHT) -->
+        <div class="floating-pip-panel">
+            <div class="pip-header">
+                <span class="pip-tag">RECONSTRUCTION</span>
+                <div class="pip-deco-dots"><span></span><span></span><span></span></div>
+            </div>
+            
+            <div class="pip-content">
+                <!-- REGISTER MODE: Sculptor Canvas -->
+                <div id="sculptor-container" class="pip-module">
+                    <canvas id="sculptor-canvas" width="200" height="260"></canvas>
+                </div>
+
+                <!-- DETECT MODE: Profile Vision -->
+                <div id="profile-vision-container" class="pip-module">
+                    <div class="profile-preview-frame">
+                        <img id="profile-match-img" src="" alt="Profile">
+                        <div class="match-glitch-layer"></div>
+                    </div>
+                    <div class="match-identity-label">
+                        <span class="label-tiny">MATCHED ID</span>
+                        <span id="match-name-badge">UNKNOWN</span>
+                    </div>
+                </div>
             </div>
 
-            <div class="scan-overlay">
-                <div class="scanner-line"></div>
+            <div class="pip-analytics">
+                <div class="pip-stat">COMPLETION: <span id="completion-text">0%</span></div>
+                <div class="pip-stat">SYMMETRY: <span id="symmetry-status">STABLE</span></div>
             </div>
-            <div id="scan-info" class="glass-info">
-                <p id="scan-status-msg">Đang khởi tạo camera...</p>
-            </div>
-            <button id="cancel-scan-btn" class="close-btn">&times;</button>
         </div>
+
+        <!-- BIO ANALYTICS (LEFT) -->
+        <div id="bio-overlay" class="bio-hud-side"></div>
+        
+        <button id="cancel-scan-btn" class="abort-command-btn">ABORT MISSION [ESC]</button>
     </div>
 
     <!-- Password Modal -->
@@ -66,7 +94,7 @@
         <div class="modal-content glass-panel">
             <h2 id="modal-title">Xác thực quyền</h2>
             <p id="modal-prompt">Nhập mật khẩu để đăng ký khuôn mặt mới</p>
-            <input type="password" id="admin-pass" placeholder="Mật khẩu..." autofocus>
+            <input type="password" id="admin-pass" placeholder="Mật khẩu..." autofocus autocomplete="new-password">
             <div class="modal-footer">
                 <button id="verify-pass-btn" class="primary-btn">Xác nhận</button>
                 <button id="close-modal-btn" class="secondary-btn">Hủy</button>
@@ -119,11 +147,11 @@
                 <h3>Cài đặt bảo mật</h3>
                 <div class="settings-group">
                     <label>Mật khẩu Admin (Tầng 1)</label>
-                    <input type="password" id="new-admin-pass" placeholder="Mật khẩu mới...">
+                    <input type="password" id="new-admin-pass" placeholder="Mật khẩu mới..." autocomplete="new-password">
                 </div>
                 <div class="settings-group">
                     <label>Mật khẩu Bí mật (Tầng 2)</label>
-                    <input type="password" id="new-secret-pass" placeholder="Mật khẩu cực bí mật...">
+                    <input type="password" id="new-secret-pass" placeholder="Mật khẩu cực bí mật..." autocomplete="new-password">
                 </div>
                 <button id="save-settings-btn" class="primary-btn" style="width: 100%; margin-top: 10px;">Cập nhật mật
                     khẩu</button>
@@ -170,7 +198,6 @@
         </div>
     </div>
 
-    <script src="node_modules/face-api.js/dist/face-api.min.js"></script>
     <script src="renderer.js"></script>
 </body>
 

@@ -1,571 +1,607 @@
 const { ipcRenderer } = require('electron');
+const path = require('path');
+const fs = require('fs');
 
+// --- APP STATE V2.3.4.6 (PERSONALIZED PRO MASTER) ---
+let isProcessing = false;
+let isRegistering = false;
+let isLocked = true;
+let currentRegisteringName = "";
+let scanProgress = 0;
+
+// Roulette System v4.1
+let rouletteInterval = null;
+let profilePool = [];
+let pythonReady = false;
+let pythonProcessing = false;
+let USER_DATA_PATH = "";
+let APP_CONFIG = { adminPass: '123456', secretPass: '999999' };
+let currentAuthAction = "";
+let cameraStream = null;
+
+// UI ELEMENTS
 const video = document.getElementById('video');
-const canvas = document.getElementById('canvas');
-const lockScreen = document.getElementById('lock-screen');
 const scanScreen = document.getElementById('scan-screen');
+const lockScreen = document.getElementById('lock-screen');
 const scanStatusMsg = document.getElementById('scan-status-msg');
-const passwordModal = document.getElementById('password-modal');
-const adminPass = document.getElementById('admin-pass');
-const errorMsg = document.getElementById('error-msg');
-const notificationModal = document.getElementById('notification-modal');
-const notificationMsg = document.getElementById('notification-msg');
-const closeNotificationBtn = document.getElementById('close-notification-btn');
-
-const namingModal = document.getElementById('naming-modal');
-const faceNameInput = document.getElementById('face-name-input');
-const saveFaceBtn = document.getElementById('save-face-btn');
-
-const managementModal = document.getElementById('management-modal');
-const faceList = document.getElementById('face-list');
-const closeManagementBtn = document.getElementById('close-management-btn');
-
-const settingsModal = document.getElementById('management-modal'); // Unified
-const newAdminPass = document.getElementById('new-admin-pass');
-const newSecretPass = document.getElementById('new-secret-pass');
-const saveSettingsBtn = document.getElementById('save-settings-btn');
-const settingsMsg = document.getElementById('settings-msg');
-const settingsBtn = document.getElementById('settings-btn'); // No longer needed but keeping for var safety
-
-const confirmationModal = document.getElementById('confirmation-modal');
-const confirmModalMsg = document.getElementById('confirm-modal-msg');
-const confirmYesBtn = document.getElementById('confirm-yes-btn');
-const confirmNoBtn = document.getElementById('confirm-no-btn');
-
+const progressBar = document.getElementById('scan-progress-bar');
+const completionText = document.getElementById('completion-text');
+const sculptorCanvas = document.getElementById('sculptor-canvas');
+const sctx = sculptorCanvas?.getContext('2d');
 const clockTime = document.getElementById('clock-time');
 const clockDate = document.getElementById('clock-date');
 
-let isRegistering = false;
-let isProcessing = false;
-let pythonProcessing = false;
-let pythonInterval = null;
-let currentRegisteringName = "";
-let currentAuthAction = null; // 'register', 'settings', 'exit'
-let confirmCallback = null;
-let isPythonRegistered = false;
-let pythonReady = false;
-let isCapturingAngle = false; // COOLDOWN FLAG
-let registrationStarted = false; // NEW SESSION FLAG
-let _unlockPending = false; // Flag để xử lý race condition unlock
+// --- INITIALIZATION ---
+window.addEventListener('DOMContentLoaded', () => {
+    updateClock();
+    setInterval(updateClock, 1000);
+    loadSettings();
+    
+    if (sculptorCanvas) {
+        sculptorCanvas.width = 300;
+        sculptorCanvas.height = 400;
+    }
 
-let currentGuideStepIdx = 0;
-const guideSteps = ['center', 'left', 'right', 'up', 'down'];
-const guideStepLabels = {
-    'center': 'Nhìn thẳng vào camera',
-    'left': 'Quay mặt sang Trái',
-    'right': 'Quay mặt sang Phải',
-    'up': 'Ngước mặt lên Trên',
-    'down': 'Cúi mặt xuống Dưới'
-};
+    // Tương tác phím Enter (v2.3.2+)
+    document.addEventListener('keyup', (e) => {
+        if (e.key === 'Enter') {
+            const activeModal = document.querySelector('.modal.active');
+            if (activeModal) {
+                const primaryBtn = activeModal.querySelector('.primary-btn');
+                if (primaryBtn) primaryBtn.click();
+            }
+        } else if (e.key === 'Escape' && isProcessing) {
+            stopScan();
+        }
+    });
 
-// --- LOGGING ---
-function addLog(message, type = 'info') {
-    const logBody = document.getElementById('log-content');
-    const logConsole = document.getElementById('log-console');
-    if (!logBody) return;
+    // Trình lắng nghe sự kiện nút bấm (v2.3.2.1)
+    document.getElementById('save-settings-btn')?.addEventListener('click', saveAdvancedSettings);
+    document.getElementById('close-management-btn')?.addEventListener('click', () => closeModal('management-modal'));
+    document.getElementById('close-modal-btn')?.addEventListener('click', () => closeModal('password-modal'));
+    document.getElementById('close-notification-btn')?.addEventListener('click', () => closeModal('notification-modal'));
+    document.getElementById('cancel-scan-btn')?.addEventListener('click', stopScan);
+    
+    document.getElementById('confirm-yes-btn')?.addEventListener('click', () => {
+        if (window.pendingDeleteId) {
+            executeDeleteFace(window.pendingDeleteId);
+            closeModal('confirmation-modal');
+        }
+    });
+    document.getElementById('confirm-no-btn')?.addEventListener('click', () => closeModal('confirmation-modal'));
+});
 
-    // Bỏ hiển thị bảng System Debug Log
-    // logConsole.style.display = 'block';
-    const entry = document.createElement('div');
-    entry.className = `log-entry ${type}`;
-    const time = new Date().toLocaleTimeString();
-    entry.innerHTML = `<span class="log-time">[${time}]</span> <span class="log-msg">${message}</span>`;
-    logBody.appendChild(entry);
-    logBody.scrollTop = logBody.scrollHeight;
-
-    while (logBody.children.length > 50) logBody.removeChild(logBody.firstChild);
+function updateClock() {
+    const now = new Date();
+    if (clockTime) clockTime.innerText = now.toLocaleTimeString('vi-VN', { hour12: false });
+    if (clockDate) clockDate.innerText = now.toLocaleDateString('vi-VN', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' });
 }
 
-// --- HELPERS ---
-async function startCamera() {
+async function initCamera() {
     try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
-        video.srcObject = stream;
-        return true;
-    } catch (err) {
-        addLog("Lỗi truy cập camera: " + err.message, 'error');
-        return false;
+        if (cameraStream) stopCamera();
+        cameraStream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, frameRate: 24 } });
+        video.srcObject = cameraStream;
+    } catch (err) { 
+        console.error("CAMERA ERROR", err);
+        updateUIStatus("LỖI CAMERA: Vui lòng kiểm tra quyền truy cập!");
+        alert("KHÔNG THỂ KHỞI TẠO CAMERA: " + err.message);
     }
 }
 
 function stopCamera() {
-    const stream = video.srcObject;
-    if (stream) {
-        stream.getTracks().forEach(track => track.stop());
+    if (cameraStream) {
+        cameraStream.getTracks().forEach(track => track.stop());
+        cameraStream = null;
         video.srcObject = null;
     }
 }
 
-function updateGuideUI(capturedDirections = []) {
-    const step = guideSteps[currentGuideStepIdx];
-    const textEl = document.getElementById('guide-text');
-    if (!textEl) return;
-    textEl.innerText = guideStepLabels[step] || "Đang hoàn tất...";
+// --- SKETCHING LOGIC V2.3.4 (PRO MASTER) ---
+function drawFaceSketch(result) {
+    if (!result || !result.features) return;
+    const f = result.features;
+    const alpha = isRegistering ? 1.0 : 0.6;
+    const cw = sculptorCanvas.width;
+    const ch = sculptorCanvas.height;
 
-    // Reset arrows but keep 'done' states
-    document.querySelectorAll('.guide-arrow').forEach(a => {
-        a.classList.remove('active');
-        a.classList.remove('done'); // CLEAR PREVIOUS STATE
-        const arrowDir = a.id.replace('arrow-', '');
-        if (capturedDirections.includes(arrowDir)) {
-            a.classList.add('done');
+    // --- ASPECT RATIO COMPENSATION v2.5.1 ---
+    const vw = video.videoWidth || 480;
+    const vh = video.videoHeight || 360;
+    const vAR = vw / vh;
+    const cAR = cw / ch;
+
+    let targetW, targetH, offsetX = 0, offsetY = 0;
+    if (vAR > cAR) {
+        targetW = cw;
+        targetH = cw / vAR;
+        offsetY = (ch - targetH) / 2;
+    } else {
+        targetH = ch;
+        targetW = ch * vAR;
+        offsetX = (cw - targetW) / 2;
+    }
+
+    const mapX = (x) => offsetX + x * targetW;
+    const mapY = (y) => offsetY + y * targetH;
+
+    sctx.clearRect(0, 0, cw, ch);
+    sctx.strokeStyle = `rgba(0, 242, 255, ${alpha})`;
+    sctx.lineWidth = 1.5;
+    sctx.lineCap = 'round';
+
+    const drawPrecisePath = (ctx, pts, close = false) => {
+        if (!pts || pts.length < 2) return;
+        ctx.beginPath();
+        ctx.moveTo(mapX(pts[0][0]), mapY(pts[0][1]));
+        for (let i = 1; i < pts.length; i++) {
+            ctx.lineTo(mapX(pts[i][0]), mapY(pts[i][1]));
+        }
+        if (close) ctx.closePath();
+        ctx.stroke();
+    };
+
+    if (f.silhouette) drawPrecisePath(sctx, f.silhouette, true);
+    if (f.left_eye) drawPrecisePath(sctx, f.left_eye, true);
+    if (f.right_eye) drawPrecisePath(sctx, f.right_eye, true);
+
+    // Vẽ Môi (v4.2.4: Tắt hoàn toàn nếu bị che khuất ở cả 2 chế độ)
+    const isOccluded = (result.occlusion && result.occlusion.mouth) || result.cleanroom_mode;
+    if (f.lips && !isOccluded) {
+        drawPrecisePath(sctx, f.lips, true);
+    }
+
+    if (f.brows) {
+        if (f.brows.left) drawPrecisePath(sctx, f.brows.left, false);
+        if (f.brows.right) drawPrecisePath(sctx, f.brows.right, false);
+    }
+    if (f.bridge) drawPrecisePath(sctx, f.bridge, false);
+
+    // Iris Tracking (v4.0)
+    if (f.iris) {
+        sctx.lineWidth = 1;
+        sctx.strokeStyle = "rgba(0, 242, 255, 0.8)";
+        if (f.iris.left) drawPrecisePath(sctx, f.iris.left, true);
+        if (f.iris.right) drawPrecisePath(sctx, f.iris.right, true);
+    }
+
+    // Bio-Mesh Lưới (v4.0)
+    if (f.mesh) {
+        sctx.lineWidth = 0.5;
+        sctx.strokeStyle = `rgba(0, 242, 255, ${alpha * 0.3})`;
+        if (f.mesh.horizontal) drawPrecisePath(sctx, f.mesh.horizontal, false);
+        if (f.mesh.vertical) drawPrecisePath(sctx, f.mesh.vertical, false);
+    }
+
+    if (f.bio) updateBioOverlay(f.bio);
+
+    // Laser Quét
+    const laserY = mapY(result.pitch / 50 + 0.5); // Hiệu chỉnh laser theo pitch chuẩn hóa
+    sctx.shadowBlur = 10;
+    sctx.shadowColor = "var(--primary)";
+    sctx.fillStyle = "rgba(0, 242, 255, 0.4)";
+    sctx.fillRect(0, laserY, cw, 2);
+    sctx.shadowBlur = 0;
+}
+
+// (Hàm drawPath cũ xóa - đã tích hợp vào drawPrecisePath bên trong drawFaceSketch v2.5.1)
+
+function updateBioOverlay(bio) {
+    const overlay = document.getElementById('bio-overlay');
+    if (!overlay) return;
+    overlay.innerHTML = `
+        <div class="bio-stat"><span>BPM:</span> <span class="pulse-text">${bio.bpm}</span></div>
+        <div class="bio-stat"><span>DEPTH:</span> <span>${bio.depth}mm</span></div>
+        <div class="bio-stat"><span>SKIN:</span> <span style="color:${bio.skin}; text-shadow: 0 0 5px ${bio.skin}">${bio.skin}</span></div>
+        <div class="bio-stat"><span>FOCUS:</span> <span>${Math.round(bio.focus * 100)}%</span></div>
+    `;
+    overlay.style.borderLeftColor = bio.skin;
+}
+
+// --- SCANNING SYSTEM ---
+async function startScan(mode, faceName = "") {
+    isProcessing = true;
+    isRegistering = (mode === 'register');
+    currentRegisteringName = faceName;
+    
+    // Reset UI v4.0 HUD
+    scanProgress = 0;
+    if (progressBar) progressBar.style.width = '0%';
+    if (completionText) completionText.innerText = '0%';
+    if (sctx) sctx.clearRect(0, 0, sculptorCanvas.width, sculptorCanvas.height);
+    
+    // Dọn dẹp ảnh đối soát cũ (v4.0.1)
+    const oldProfileImg = document.getElementById('profile-match-img');
+    const oldNameBadge = document.getElementById('match-name-badge');
+    if (oldProfileImg) oldProfileImg.src = "";
+    if (oldNameBadge) {
+        oldNameBadge.innerText = "SEARCHING...";
+        oldNameBadge.classList.add('searching-blink');
+    }
+    scanScreen.classList.remove('matching');
+    
+    // FACE ROULETTE INIT (v4.1)
+    if (!isRegistering) {
+        startFaceRoulette();
+    }
+    
+    // HUD HUD Mode Toggling
+    scanScreen.classList.add('active');
+    scanScreen.classList.remove('register-mode', 'detect-mode');
+    scanScreen.classList.add(isRegistering ? 'register-mode' : 'detect-mode');
+    
+    lockScreen.classList.remove('active');
+    updateUIStatus(isRegistering ? "KIỂM TRA LUỒNG AI..." : "ĐANG KHỞI TẠO AI...");
+    
+    await initCamera(); 
+    triggerNextFrame(800); 
+}
+
+function stopScan() {
+    isProcessing = false;
+    stopCamera(); 
+    
+    clearInterval(rouletteInterval);
+    rouletteInterval = null;
+    
+    scanScreen.classList.remove('active', 'register-mode', 'detect-mode', 'matching');
+    lockScreen.classList.add('active');
+    if (sctx) sctx.clearRect(0, 0, sculptorCanvas.width, sculptorCanvas.height);
+}
+
+// --- FACE ROULETTE ENGINE v4.1 ---
+function startFaceRoulette() {
+    profilePool = [];
+    const imgEl = document.getElementById('profile-match-img');
+    const pipPanel = document.querySelector('.floating-pip-panel');
+    const faces = getFaces();
+    const profileDir = path.join(USER_DATA_PATH, 'profiles');
+    
+    // Nạp tất cả ảnh hồ sơ có sẵn
+    faces.forEach(f => {
+        if (f.thumbnail) {
+            const tPath = path.join(profileDir, f.thumbnail);
+            if (fs.existsSync(tPath)) {
+                try {
+                    const b64 = fs.readFileSync(tPath, 'base64');
+                    profilePool.push(`data:image/jpeg;base64,${b64}`);
+                } catch(e) {}
+            }
         }
     });
 
-    if (step !== 'center') {
-        const arrow = document.getElementById(`arrow-${step}`);
-        if (arrow) arrow.classList.add('active');
+    if (profilePool.length === 0) {
+        if (imgEl) imgEl.src = ""; // Hoặc ảnh placeholder nếu có
+        return;
     }
+
+    // Nếu chỉ có 1 người, thêm một ảnh "Bóng đen" để tạo hiệu ứng chạy (v4.1.2)
+    if (profilePool.length === 1) {
+        profilePool.push("assets/user_silhouette.png"); 
+    }
+
+    let idx = 0;
+    if (pipPanel) pipPanel.classList.add('roulette-active');
+
+    clearInterval(rouletteInterval);
+    rouletteInterval = setInterval(() => {
+        if (!isProcessing || isRegistering) {
+            clearInterval(rouletteInterval);
+            if (pipPanel) pipPanel.classList.remove('roulette-active');
+            return;
+        }
+        
+        // Chỉ quay khi chưa tìm thấy mục tiêu (chưa có lớp matching)
+        if (!scanScreen.classList.contains('matching')) {
+            imgEl.src = profilePool[idx];
+            idx = (idx + 1) % profilePool.length;
+        } else {
+            if (pipPanel) pipPanel.classList.remove('roulette-active');
+            clearInterval(rouletteInterval);
+        }
+    }, 100);
 }
 
-// --- AI DETECTION LOOP ---
-async function startDetection() {
-    if (isProcessing) return;
-    isProcessing = true;
-    currentGuideStepIdx = 0;
-
-    scanStatusMsg.innerText = pythonReady ? "Đang quét môi trường 3D..." : "Đang khởi động AI 3D...";
-
-    const displaySize = { width: video.videoWidth, height: video.videoHeight };
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const ctx = canvas.getContext('2d');
-
-    const runDetection = () => {
-        if (!isProcessing || !video.srcObject) return;
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        requestAnimationFrame(runDetection);
-    };
-    runDetection();
-
-    if (!pythonInterval) {
-        pythonInterval = setInterval(() => {
-            if (isProcessing && !pythonProcessing && !isCapturingAngle && video.srcObject && pythonReady) {
-                const mode = isRegistering ? 'register' : 'detect';
-                sendFrameToPython(mode, currentRegisteringName);
-            }
-        }, 500); // 3D PRO SPEED
-    }
+function updateUIStatus(msg) {
+    if (scanStatusMsg) scanStatusMsg.innerText = msg;
 }
 
-function sendFrameToPython(mode, faceName = "") {
+function triggerNextFrame(delay = 80) {
+    if (!isProcessing || !pythonReady) return;
+    setTimeout(() => {
+        if (isProcessing && !pythonProcessing) sendFrameToPython();
+    }, delay);
+}
+
+function sendFrameToPython() {
     if (!video.videoWidth) return;
-
-    // SCALE DOWN: Use 640px width for optimal balance between speed and accuracy
-    const targetWidth = 640;
+    pythonProcessing = true;
+    
+    const targetWidth = 480;
     const scale = targetWidth / video.videoWidth;
     const targetHeight = video.videoHeight * scale;
-
     const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = targetWidth;
-    tempCanvas.height = targetHeight;
-    const ctx = tempCanvas.getContext('2d');
-
-    ctx.translate(tempCanvas.width, 0);
-    ctx.scale(-1, 1);
-    ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
-
-    // GPU OPTIMIZATION: Lower quality to 0.6 and use smaller dimensions if needed
-    const imageData = tempCanvas.toDataURL('image/jpeg', 0.6);
-    pythonProcessing = true;
-
-    if (isProcessing && !isCapturingAngle) {
-        scanStatusMsg.innerText = "Đang phân tích dữ liệu 3D...";
-        scanStatusMsg.style.color = "#00d4ff";
-    }
-
-    ipcRenderer.send('process-image-python', {
-        mode,
-        image_data: imageData,
-        faceName: faceName,
-        reset_angles: registrationStarted // CLEAR OLD DATA ON START
+    tempCanvas.width = targetWidth; tempCanvas.height = targetHeight;
+    const tctx = tempCanvas.getContext('2d');
+    tctx.translate(tempCanvas.width, 0); tctx.scale(-1, 1);
+    tctx.drawImage(video, 0, 0, targetWidth, targetHeight);
+    
+    ipcRenderer.send('process-image', {
+        mode: isRegistering ? 'register' : 'detect',
+        image_data: tempCanvas.toDataURL('image/jpeg', 0.6),
+        faceName: currentRegisteringName,
+        user_data_path: USER_DATA_PATH
     });
-
-    if (registrationStarted) registrationStarted = false;
 }
 
-// --- IPC LISTENERS ---
 ipcRenderer.on('python-result', (event, result) => {
     pythonProcessing = false;
+    if (isProcessing) triggerNextFrame(30);
 
-    if (result.status === "LOADING_MODELS") {
-        addLog("AI: Đang nạp dữ liệu mốc Landmark...");
-        return;
-    }
+    // console.log("AI DEBUG RESULT:", result); // Bật để kiểm tra dữ liệu
 
     if (result.status === "READY") {
+        updateUIStatus("AI ĐÃ SẴN SÀNG");
         pythonReady = true;
-        addLog(`AI ENGINE: ${result.mode || 'Sẵn sàng'}`);
-        scanStatusMsg.innerText = "Sẵn sàng quét diện mạo Pro";
-        return;
     }
+    
+    if (result.success) {
+        if (result.features) drawFaceSketch(result);
 
-    if (result.faces) {
-        renderFaceList(result.faces);
-        return;
-    }
+        if (result.status === "sculpting") {
+            scanProgress = result.progress || 0;
+            progressBar.style.width = `${scanProgress}%`;
+            completionText.innerText = `${scanProgress}%`;
+            
+            let statusPrefix = "";
+            if (result.cleanroom_mode) statusPrefix = "[CHẾ ĐỘ PHÒNG SẠCH] ";
+            else if (result.mask_detected) statusPrefix = "[CHẾ ĐỘ CHE KHUẤT] ";
+            
+            updateUIStatus(statusPrefix + (isRegistering ? `ĐANG PHÁC THẢO: ${scanProgress}%` : "ĐANG ĐỐI SOÁT..."));
+        } else if (result.status === "verifying") {
+            updateUIStatus(result.detail || "ĐANG XÁC THỰC BẢO MẬT...");
+            if (progressBar) progressBar.style.width = (result.progress || 0) + '%';
+            if (completionText) completionText.innerText = (result.progress || 0) + '%';
+            
+            // PROFILE VISION DISPLAY (v4.0 HUD)
+            if (result.profile_img) {
+                // Khóa vòng quay Roulette khi tìm thấy mục tiêu
+                if (rouletteInterval) {
+                    clearInterval(rouletteInterval);
+                    rouletteInterval = null;
+                }
+                
+                const imgEl = document.getElementById('profile-match-img');
+                const badge = document.getElementById('match-name-badge');
+                if (imgEl && result.profile_img) imgEl.src = `data:image/jpeg;base64,${result.profile_img}`;
+                if (badge) {
+                    badge.innerText = result.match ? result.match.toUpperCase() : "MASTER";
+                    badge.classList.remove('searching-blink');
+                }
+                scanScreen.classList.add('matching');
+            }
 
-    if (result.message === "Deleted successfully") {
-        addLog("Đã xóa diện mạo thành công!", 'info');
-        loadFaceList();
-        return;
-    }
-
-    if (result.status === "no_face") {
-        if (isProcessing) {
-            scanStatusMsg.innerText = "Vui lòng đưa khuôn mặt vào khung hình...";
-            scanStatusMsg.style.color = "#ffaa00";
-        }
-        return;
-    }
-
-    if (result.status === "duplicate") {
-        addLog(`CẢNH BÁO: Khuôn mặt ĐÃ TRÙNG KHỚP CAO với [${result.match_name}]`, 'error');
-        stopCamera();
-        switchToLockScreen();
-        showNotification(`Hệ thống từ chối đăng ký do đặc trưng khuôn mặt (hoặc vùng mắt) của bạn trùng khớp rất cao với hồ sơ của: ${result.match_name}`);
-        return;
-    }
-
-    if (result.success && result.status === "registered") {
-        if (!isCapturingAngle) {
-            isCapturingAngle = true;
-            addLog(`Đã ghi nhớ góc: ${result.direction.toUpperCase()}`, 'success');
-            scanStatusMsg.innerText = `Đã thu thập dữ liệu góc ${result.direction.toUpperCase()}`;
-            scanStatusMsg.style.color = "#00ff88";
-
-            const capturedDirections = result.all_angles || [];
-            updateGuideUI(capturedDirections);
-
-            if (capturedDirections.length >= 5 || capturedDirections.includes('center_masked')) {
-                addLog("Chúc mừng! Đã hoàn tất bản đồ 3D khuôn mặt.", 'success');
-                document.getElementById('guide-check').classList.add('show');
-                isPythonRegistered = true;
+            const canvas = document.getElementById('sculptor-canvas');
+            if (canvas) canvas.style.boxShadow = "0 0 20px rgba(0, 242, 255, 0.4)";
+        } else if (result.status === "sculpt_complete") {
+            showNotification("ĐĂNG KÝ THÀNH CÔNG", "Dữ liệu khuôn mặt đã được lưu trữ an toàn.");
+            stopScan();
+        } else if (result.status === "success" || result.status === "unknown") {
+            if (result.status === "success") {
+                isProcessing = false;
+                stopCamera();
+                const welcomeName = result.match ? result.match.toUpperCase() : "MASTER";
+                const isStrict = result.security_level === "STRICT";
+                
+                updateUIStatus(`XIN CHÀO: ${welcomeName}!`);
+                if (progressBar) progressBar.style.width = '100%';
+                
+                showNotification(
+                    isStrict ? "XÁC THỰC BẢO MẬT CAO" : "XÁC THỰC THÀNH CÔNG", 
+                    `Chào mừng trở lại, ${welcomeName}! ${isStrict ? 'Hệ thống đã nhận diện xuyên lớp phụ kiện.' : 'Hệ thống đã mở khóa.'}`
+                );
+                
                 setTimeout(() => {
-                    showNotification(`Hệ thống Virtual 3D đã lưu diện mạo: ${currentRegisteringName}`);
-                    switchToLockScreen();
-                    isCapturingAngle = false;
-                }, 1500);
+                    ipcRenderer.send('unlock-success');
+                    closeModal('notification-modal');
+                }, 1800);
             } else {
-                // Wait 1.5s before allowing next angle capture
-                setTimeout(() => {
-                    for (let i = 0; i < guideSteps.length; i++) {
-                        if (!capturedDirections.includes(guideSteps[i])) {
-                            currentGuideStepIdx = i;
-                            break;
-                        }
-                    }
-                    updateGuideUI(capturedDirections);
-
-                    // QUAN TRỌNG: Xóa angle_buffer cũ trong Python để nhận diện hướng mới ngay lập tức
-                    ipcRenderer.send('process-image-python', { mode: 'reset_buffer', image_data: '', user_data_path: '' });
-
-                    isCapturingAngle = false;
-                    const nextStep = guideSteps[currentGuideStepIdx];
-                    scanStatusMsg.innerText = `Chuẩn bị: ${guideStepLabels[nextStep] || 'Đang hoàn tất...'}`;
-                    scanStatusMsg.style.color = '#aaddff';
-                }, 1500);
-
+                updateUIStatus(result.occlusion ? "KẾT QUẢ KHÔNG ĐỦ TIN CẬY - VUI LÒNG THÁO MẶT NẠ" : "KHÔNG XÁC ĐỊNH - TỪ CHỐI");
+                if (progressBar) progressBar.style.width = '0%';
+                if (completionText) completionText.innerText = '0%';
+                
+                scanScreen.classList.remove('matching');
+                const canvas = document.getElementById('sculptor-canvas');
+                if (canvas) canvas.style.boxShadow = "0 0 25px rgba(255, 0, 0, 0.6)";
             }
         }
-        return;
-    }
-
-    if (!isProcessing) return;
-
-    if (result.success && result.match) {
-        if (result.masked) {
-            addLog(`Nhận diện Fallback (Che chắn): ${result.match}`, 'warn');
-        } else {
-            addLog(`Nhận diện 3D khớp: ${result.match} (Góc: ${result.direction})`, 'success');
+    } else {
+        if (result.status === "duplicate_face") {
+            showNotification("LỖI ĐĂNG KÝ", `Khuôn mặt này đã tồn tại dưới tên: ${result.match}`);
+            stopScan();
         }
-        handleRecognitionSuccess(result.match, result.masked);
-    } else if (!result.success && result.status !== "no_face") {
-        addLog(result.message || "Không khớp dữ liệu 3D", 'warn');
     }
 });
 
-function handleRecognitionSuccess(name, isMasked=false) {
-    if (isMasked) {
-        scanStatusMsg.innerText = `Chào ${name}! Xác thực xuyên vật cản thành công.`;
-        scanStatusMsg.style.color = "#ffaa00";
-    } else {
-        scanStatusMsg.innerText = `Chào ${name}! Đã xác thực 3D.`;
-        scanStatusMsg.style.color = "#00f2ff";
+// --- UI EVENT HANDLERS ---
+function getFaces() {
+    const jsonPath = path.join(USER_DATA_PATH, 'faces_v2.json');
+    if (fs.existsSync(jsonPath)) {
+        try { return JSON.parse(fs.readFileSync(jsonPath, 'utf8')); } catch(e) { return []; }
     }
-    isProcessing = false;
-    if (pythonInterval) { clearInterval(pythonInterval); pythonInterval = null; }
-    setTimeout(() => {
-        switchToLockScreen();
-        ipcRenderer.send('unlock-success');
-    }, 1500);
+    return [];
 }
 
-// --- MODAL & UI CONTROL ---
-function switchToScanScreen(register = false) {
-    isRegistering = register;
-    lockScreen.classList.remove('active');
-    scanScreen.classList.add('active');
-    scanStatusMsg.innerText = pythonReady ? "Đang quét môi trường 3D..." : "Đang khởi động AI 3D...";
-    scanStatusMsg.style.color = "white";
-
-    document.getElementById('guide-ui').style.display = isRegistering ? 'block' : 'none';
-    if (isRegistering) {
-        document.getElementById('guide-check').classList.remove('show');
-        addLog("BẮT ĐẦU QUY TRÌNH QUÉT 3D ĐA GÓC ĐỘ");
-        currentGuideStepIdx = 0; // Reset to center
-        registrationStarted = true; // TRIGGER RESET IN PYTHON
-        updateGuideUI();
-    }
-
-    startCamera().then(success => {
-        if (success) {
-            // FIX: Use simple async loop instead of onloadedmetadata to avoid double calls
-            setTimeout(() => startDetection(), 500);
-        } else {
-            showNotification("Không thể mở Camera!");
-            switchToLockScreen();
-        }
-    });
-}
-
-function switchToLockScreen() {
-    stopCamera();
-    isProcessing = false;
-    if (pythonInterval) { clearInterval(pythonInterval); pythonInterval = null; }
-    const ctx = canvas.getContext('2d');
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    scanScreen.classList.remove('active');
-    lockScreen.classList.add('active');
-}
-
-// --- EVENT LISTENERS ---
 document.getElementById('unlock-btn').addEventListener('click', () => {
-    _unlockPending = true;
-    ipcRenderer.send('check-registration-status');
+    if (getFaces().length > 0) startScan('detect');
+    else showNotification("CHƯA CÓ DỮ LIỆU", "Vui lòng 'Đăng Kí' khuôn mặt trước.");
 });
 
 document.getElementById('register-btn').addEventListener('click', () => {
     currentAuthAction = 'register';
-    document.getElementById('modal-title').innerText = "👤 XÁC THỰC ĐĂNG KÝ";
-    document.getElementById('modal-prompt').innerText = "Nhập mật khẩu để bắt đầu quét khuôn mặt mới";
-    passwordModal.classList.add('active');
-    adminPass.focus();
+    openModal('password-modal');
 });
 
-settingsBtn.addEventListener('click', () => {
+document.getElementById('settings-btn').addEventListener('click', () => {
     currentAuthAction = 'settings';
-    document.getElementById('modal-title').innerText = "🔐 Quản lí nâng cao";
-    document.getElementById('modal-prompt').innerText = "Nhập mật khẩu để truy cập vào cài đặt";
-    passwordModal.classList.add('active');
-    adminPass.focus();
+    openModal('password-modal');
 });
 
-document.getElementById('close-modal-btn').addEventListener('click', () => {
-    passwordModal.classList.remove('active');
-    adminPass.value = '';
-    errorMsg.innerText = '';
-});
+document.getElementById('verify-pass-btn').addEventListener('click', () => {
+    const pass = document.getElementById('admin-pass').value;
+    const errorMsg = document.getElementById('error-msg');
+    errorMsg.innerText = ""; 
 
-function handlePasswordVerify() {
-    const password = adminPass.value;
-    // Hierarchical Check:
-    // 'register' can use Admin or Secret pass
-    // 'settings' / 'exit' MUST use Secret pass
-    const authType = (currentAuthAction === 'register') ? 'admin' : 'secret';
-    ipcRenderer.send('verify-password', { password, type: authType });
-}
-
-document.getElementById('verify-pass-btn').addEventListener('click', handlePasswordVerify);
-adminPass.addEventListener('keypress', (e) => { if (e.key === 'Enter') handlePasswordVerify(); });
-
-ipcRenderer.on('verify-password-result', (event, { isValid }) => {
-    if (isValid) {
-        passwordModal.classList.remove('active');
-        adminPass.value = '';
-        if (currentAuthAction === 'register') {
-            namingModal.classList.add('active');
-            faceNameInput.focus();
-        } else if (currentAuthAction === 'settings') {
-            openManagement();
-        } else if (currentAuthAction === 'exit') {
-            ipcRenderer.send('exit-app-verified');
-        }
+    if (currentAuthAction === 'register') {
+        if (pass === APP_CONFIG.secretPass) {
+            closeModal('password-modal');
+            openModal('naming-modal');
+        } else { errorMsg.innerText = "Mật mã USER không chính xác!"; }
     } else {
-        errorMsg.innerText = "Sai mật khẩu!";
+        if (pass === APP_CONFIG.adminPass) {
+            closeModal('password-modal');
+            if (currentAuthAction === 'settings') loadAndShowFaceList();
+            else if (currentAuthAction === 'exit') ipcRenderer.send('exit-app-verified');
+        } else { errorMsg.innerText = "Mật mã ADMIN không chính xác!"; }
     }
 });
 
-saveSettingsBtn.addEventListener('click', () => {
-    const adminP = newAdminPass.value;
-    const secretP = newSecretPass.value;
-    if (!adminP && !secretP) {
-        settingsMsg.style.color = "#ff4d4d";
-        settingsMsg.innerText = "Vui lòng nhập ít nhất một mật khẩu mới!";
+document.getElementById('save-face-btn').addEventListener('click', () => {
+    const name = document.getElementById('face-name-input').value.trim();
+    if (!name) return;
+    const existing = getFaces();
+    if (existing.some(f => f.name.toLowerCase() === name.toLowerCase())) {
+        document.getElementById('naming-error').innerText = "Tên này đã tồn tại!";
         return;
     }
-    ipcRenderer.send('update-settings', { newAdminPass: adminP, newSecretPass: secretP });
+    closeModal('naming-modal'); 
+    startScan('register', name); 
 });
 
-ipcRenderer.on('update-settings-result', (event, { success }) => {
-    if (success) {
-        settingsMsg.style.color = "#00ff88";
-        settingsMsg.innerText = "Cập nhật mật khẩu thành công!";
-        newAdminPass.value = '';
-        newSecretPass.value = '';
-    } else {
-        settingsMsg.style.color = "#ff4d4d";
-        settingsMsg.innerText = "Lỗi khi cập nhật!";
-    }
-});
-
-saveFaceBtn.addEventListener('click', () => {
-    currentRegisteringName = faceNameInput.value.trim() || "User_" + Date.now();
-    namingModal.classList.remove('active');
-    faceNameInput.value = '';
-    switchToScanScreen(true);
-});
-
-// Management Logic
-function openManagement() {
-    managementModal.classList.add('active');
-    // Clear password fields inside
-    newAdminPass.value = '';
-    newSecretPass.value = '';
-    settingsMsg.innerText = '';
-    loadFaceList();
-}
-function loadFaceList() {
-    faceList.innerHTML = '<p>Đang tải...</p>';
-    ipcRenderer.send('process-image-python', { mode: 'list', image_data: '' });
-}
-function renderFaceList(faces) {
-    isPythonRegistered = faces.length > 0;
-    if (faces.length === 0) {
-        faceList.innerHTML = '<p>Chưa có diện mạo nào.</p>';
-        return;
-    }
-    faceList.innerHTML = faces.map(f => `
-        <div class="face-item">
-            <div class="face-info"><h4>${f.name}</h4><p>Ngày: ${f.date}</p></div>
-            <button class="delete-icon-btn" onclick="deleteFace('${f.id}')">&times;</button>
-        </div>
-    `).join('');
-}
-
-window.deleteFace = (id) => {
-    showCustomConfirm("Xóa diện mạo này?", () => {
-        ipcRenderer.send('process-image-python', { mode: 'delete', face_id: id, image_data: '' });
+function loadAndShowFaceList() {
+    const list = document.getElementById('face-list');
+    list.innerHTML = "";
+    const faces = getFaces();
+    faces.forEach(f => {
+        const item = document.createElement('div');
+        item.className = 'face-item';
+        item.innerHTML = `<span>${f.name}</span><button class="delete-btn" onclick="askDeleteFace('${f.id}')">Xóa</button>`;
+        list.appendChild(item);
     });
+    openModal('management-modal');
+}
+
+function saveAdvancedSettings() {
+    const newAdmin = document.getElementById('new-admin-pass').value;
+    const newSecret = document.getElementById('new-secret-pass').value;
+    const updates = {};
+    if (newAdmin) updates.adminPass = newAdmin;
+    if (newSecret) updates.secretPass = newSecret;
+    if (Object.keys(updates).length > 0) {
+        ipcRenderer.send('update-config', updates);
+        APP_CONFIG = { ...APP_CONFIG, ...updates };
+        document.getElementById('settings-msg').innerText = "Đã cập nhật mật khẩu!";
+    }
+}
+
+window.askDeleteFace = (id) => {
+    window.pendingDeleteId = id;
+    const face = getFaces().find(f => f.id === id);
+    document.getElementById('confirm-modal-msg').innerText = `Bạn có chắc muốn xóa khuôn mặt "${face ? face.name : 'này'}"?`;
+    openModal('confirmation-modal');
 };
 
-function showCustomConfirm(message, onConfirm) {
-    confirmModalMsg.innerText = message;
-    confirmCallback = onConfirm;
-    confirmationModal.classList.add('active');
-}
-confirmYesBtn.addEventListener('click', () => {
-    if (confirmCallback) confirmCallback();
-    confirmationModal.classList.remove('active');
-});
-confirmNoBtn.addEventListener('click', () => confirmationModal.classList.remove('active'));
-
-closeManagementBtn.addEventListener('click', () => managementModal.classList.remove('active'));
-document.getElementById('cancel-scan-btn').addEventListener('click', () => switchToLockScreen());
-closeNotificationBtn.addEventListener('click', () => notificationModal.classList.remove('active'));
-
-function showNotification(message) {
-    notificationMsg.innerText = message;
-    notificationModal.classList.add('active');
+function executeDeleteFace(id) {
+    const jsonPath = path.join(USER_DATA_PATH, 'faces_v2.json');
+    let faces = getFaces().filter(f => f.id !== id);
+    fs.writeFileSync(jsonPath, JSON.stringify(faces, null, 4));
+    loadAndShowFaceList();
 }
 
-// Clock Logic
-function updateClock() {
-    const now = new Date();
-    clockTime.innerText = now.toLocaleTimeString('vi-VN');
-    clockDate.innerText = now.toLocaleDateString('vi-VN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+function openModal(id) { 
+    const m = document.getElementById(id); 
+    if (!m) return;
+    m.classList.add('active'); 
+    const inputs = m.querySelectorAll('input');
+    // XÓA TRẮNG TOÀN BỘ Ô NHẬP LIỆU (v3.1.0)
+    inputs.forEach(i => { i.value = ''; }); 
+    if (inputs.length > 0) inputs[0].focus();
 }
-setInterval(updateClock, 1000); updateClock();
 
-// App Shortcuts & Initialization
-ipcRenderer.on('registration-status-result', (event, status) => {
-    isPythonRegistered = status.hasPythonReg;
-    if (_unlockPending) {
-        _unlockPending = false;
-        if (!isPythonRegistered) showNotification("Bạn chưa đăng ký khuôn mặt nào!");
-        else switchToScanScreen(false);
-    }
+function closeModal(id) { 
+    const m = document.getElementById(id); m?.classList.remove('active'); 
+}
+
+function showNotification(title, msg) {
+    document.getElementById('notification-msg').innerText = msg;
+    openModal('notification-modal');
+}
+
+function loadSettings() { ipcRenderer.send('get-user-data-path'); }
+ipcRenderer.on('user-data-path', (event, p, config) => { 
+    USER_DATA_PATH = p; if (config) APP_CONFIG = config; 
 });
 
-function showExitPrompt() {
-    currentAuthAction = 'exit';
-    document.getElementById('modal-title').innerText = "🛑 XÁC NHẬN THOÁT";
-    document.getElementById('modal-prompt').innerText = "Vui lòng nhập mật khẩu để thoát ứng dụng";
-    passwordModal.classList.add('active');
-    adminPass.focus();
-}
-
-// Map the exit button if it exists in UI
-const exitBtn = document.getElementById('exit-btn');
-if (exitBtn) exitBtn.addEventListener('click', showExitPrompt);
-
+// KHÔI PHỤC IPC PHÍM TẮT (v2.3.2.2)
 ipcRenderer.on('request-exit-pass', () => {
-    showExitPrompt();
+    stopScan(); // DỪNG QUÉT KHI YÊU CẦU THOÁT (v2.3.4.9)
+    currentAuthAction = 'exit';
+    document.getElementById('modal-title').innerText = "XÁC NHẬN THOÁT";
+    openModal('password-modal');
 });
 
-ipcRenderer.on('app-locked', () => switchToLockScreen());
+ipcRenderer.on('app-locked', () => { 
+    isLocked = true; 
+    stopScan(); // DỌN DẸP TOÀN BỘ TRẠNG THÁI QUÉT (v2.3.4.8)
+    if (progressBar) progressBar.style.width = '0%';
+    if (completionText) completionText.innerText = '0%';
+    updateUIStatus("HỆ THỐNG ĐÃ KHÓA");
+    lockScreen.classList.add('active'); 
+    scanScreen.classList.remove('active');
+});
+ipcRenderer.on('app-unlocked', () => { isLocked = false; lockScreen.classList.remove('active'); });
 
-ipcRenderer.send('check-registration-status');
-addLog("Hệ thống FaceID 3D Pro đang khởi tạo...");
+// --- AUTO UPDATE UI HANDLERS v2.6.0 ---
+let updateUrl = "";
 
-// --- AUTO UPDATE UI SYSTEM ---
-const updateModal = document.getElementById('update-modal');
-const updateVersionText = document.getElementById('update-version-text');
-const updateNotesText = document.getElementById('update-notes-text');
-const updateProgressContainer = document.getElementById('update-progress-container');
-const updateProgressBar = document.getElementById('update-progress-bar');
-const updateStatusText = document.getElementById('update-status-text');
-const updateFooter = document.getElementById('update-footer');
-const updateYesBtn = document.getElementById('update-yes-btn');
-const updateNoBtn = document.getElementById('update-no-btn');
-
-let currentDownloadUrl = null;
-
-ipcRenderer.on('update-available', (event, { version, downloadUrl, releaseNotes }) => {
-    currentDownloadUrl = downloadUrl;
-    updateModal.classList.add('active');
-    updateVersionText.innerText = `Phát hiện phiên bản mới: v${version}`;
-    updateNotesText.innerText = releaseNotes;
-    updateProgressContainer.style.display = 'none';
-    updateFooter.style.display = 'flex';
+ipcRenderer.on('update-available', (event, info) => {
+    stopScan(); // DỪNG QUÉT CAMERA KHI PHÁT HIỆN CẬP NHẬT (v3.1.0)
+    updateUrl = info.downloadUrl;
+    document.getElementById('update-version-text').innerText = `⚡ Phát hiện bản mới: v${info.version}`;
+    document.getElementById('update-notes-text').innerText = info.releaseNotes;
+    
+    // Reset UI
+    document.getElementById('update-progress-container').style.display = 'none';
+    document.getElementById('update-footer').style.display = 'flex';
+    document.getElementById('update-progress-bar').style.width = '0%';
+    
+    openModal('update-modal');
 });
 
-ipcRenderer.on('update-not-available', (event, message) => {
-    showNotification(message); // Hiển thị modal thông báo thay vì toast
+ipcRenderer.on('update-not-available', (event, msg) => {
+    stopScan(); // DỌN DẸP KHI KIỂM TRA XONG (v3.1.0)
+    showNotification("HỆ THỐNG MỚI NHẤT", msg);
+});
+
+ipcRenderer.on('update-error', (event, err) => {
+    stopScan();
+    showNotification("LỖI CẬP NHẬT", "Gặp sự cố: " + err);
+    closeModal('update-modal');
 });
 
 ipcRenderer.on('update-progress', (event, percent) => {
-    updateProgressContainer.style.display = 'block';
-    updateFooter.style.display = 'none';
-    updateProgressBar.style.width = `${percent}%`;
-    updateStatusText.innerText = percent < 100 ? `Đang tải xuống... ${percent}%` : "Mọi thứ đã xong, đang chuẩn bị thay thế...";
+    document.getElementById('update-progress-container').style.display = 'block';
+    document.getElementById('update-footer').style.display = 'none';
+    document.getElementById('update-progress-bar').style.width = percent + '%';
+    document.getElementById('update-status-text').innerText = `Đang tải: ${percent}%`;
 });
 
-ipcRenderer.on('update-error', (event, message) => {
-    showNotification("Lỗi cập nhật: " + message);
-    updateModal.classList.remove('active');
+document.getElementById('update-yes-btn').addEventListener('click', () => {
+    if (updateUrl) {
+        ipcRenderer.send('start-update', { downloadUrl: updateUrl });
+    }
 });
 
-if (updateYesBtn) {
-    updateYesBtn.addEventListener('click', () => {
-        if (currentDownloadUrl) {
-            ipcRenderer.send('start-update', { downloadUrl: currentDownloadUrl });
-        }
-    });
-}
-
-if (updateNoBtn) {
-    updateNoBtn.addEventListener('click', () => {
-        updateModal.classList.remove('active');
-    });
-}
+document.getElementById('update-no-btn').addEventListener('click', () => {
+    closeModal('update-modal');
+});
