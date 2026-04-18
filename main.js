@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, screen, globalShortcut, dialog, Notification } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, screen, globalShortcut, dialog, Notification, powerSaveBlocker } = require('electron');
 
 // Chế độ Tương thích Tuyệt đối (v1.1.32) - Khôi phục Camera & Ổn định UI
 app.commandLine.appendSwitch('disable-gpu');
@@ -386,6 +386,9 @@ function unlockApp() {
 }
 
 app.whenReady().then(() => {
+    // Ngăn máy tính đi ngủ hoặc khóa màn hình (Keep Awake) (v3.1.1)
+    powerSaveBlocker.start('prevent-display-sleep');
+    
     compileKeyGuard();
     createWindow();
     createTray();
