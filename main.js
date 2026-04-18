@@ -14,6 +14,7 @@ const http = require('http');
 const { spawn } = require('child_process');
 const readline = require('readline');
 const { PythonShell } = require('python-shell');
+const crypto = require('crypto');
 const packageJson = require('./package.json');
 
 let mainWindow;
@@ -131,14 +132,14 @@ function manageKeyGuard(enable) {
     }
 }
 
-const crypto = require('crypto');
-
 function hashPassword(password) {
     if (!password) return '';
     return crypto.createHash('sha256').update(password).digest('hex');
 }
 
 function verifyPassword(input, storedHash) {
+    if (!storedHash) return false;
+    
     // Migration logic (v3.1.0): Support both plain-text (old) and hashed (new)
     if (storedHash.length !== 64) {
         // Old password detected
@@ -165,7 +166,12 @@ function loadConfig() {
     if (fs.existsSync(configPath)) {
         try {
             const data = fs.readFileSync(configPath, 'utf8');
-            config = { ...config, ...JSON.parse(data) };
+            const loaded = JSON.parse(data);
+            config = { ...config, ...loaded };
+            
+            // Đảm bảo luôn có pass mặc định nếu bị xóa/hỏng (v3.1.3)
+            if (!config.adminPass) config.adminPass = '8d969eef6ecad3c29a3a629280e686cf0c3f5d5a86aff3ca12020c923adc6c92';
+            if (!config.secretPass) config.secretPass = '983637e6f854ca68c8b677a83d7249b0eb23e3e0ff4864115e5899982759e51c';
         } catch (e) {
             console.error("Failed to load config:", e);
         }

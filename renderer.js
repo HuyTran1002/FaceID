@@ -447,22 +447,28 @@ document.getElementById('settings-btn').addEventListener('click', () => {
     openModal('password-modal');
 });
 
+// --- PASSWORD VERIFICATION v3.1.2 (IPC SECURE) ---
 document.getElementById('verify-pass-btn').addEventListener('click', () => {
     const pass = document.getElementById('admin-pass').value;
     const errorMsg = document.getElementById('error-msg');
     errorMsg.innerText = ""; 
 
-    if (currentAuthAction === 'register') {
-        if (pass === APP_CONFIG.secretPass) {
-            closeModal('password-modal');
+    // Gửi yêu cầu xác thực về Main Process (v3.1.2)
+    ipcRenderer.send('verify-password', { password: pass, type: currentAuthAction === 'register' ? 'secret' : 'admin' });
+});
+
+ipcRenderer.on('verify-password-result', (event, { isValid, type }) => {
+    const errorMsg = document.getElementById('error-msg');
+    if (isValid) {
+        closeModal('password-modal');
+        if (type === 'secret') {
             openModal('naming-modal');
-        } else { errorMsg.innerText = "Mật mã USER không chính xác!"; }
-    } else {
-        if (pass === APP_CONFIG.adminPass) {
-            closeModal('password-modal');
+        } else {
             if (currentAuthAction === 'settings') loadAndShowFaceList();
             else if (currentAuthAction === 'exit') ipcRenderer.send('exit-app-verified');
-        } else { errorMsg.innerText = "Mật mã ADMIN không chính xác!"; }
+        }
+    } else {
+        errorMsg.innerText = type === 'secret' ? "Mật mã USER không chính xác!" : "Mật mã ADMIN không chính xác!";
     }
 });
 
