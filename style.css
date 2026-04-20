@@ -86,6 +86,10 @@ body.performance-mode .guide-container {
     box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
     max-width: 500px;
     width: 90%;
+    
+    /* TĂNG TỐC PHẦN CỨNG BẰNG GPU (UI Lag Fix v3.1.5) */
+    will-change: transform, backdrop-filter;
+    transform: translateZ(0);
 }
 
 /* Lock Screen */

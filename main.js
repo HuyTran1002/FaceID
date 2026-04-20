@@ -327,9 +327,6 @@ function createTray() {
         const contextMenu = Menu.buildFromTemplate([
             { label: 'FaceID Security (v' + packageJson.version + ')', enabled: false },
             { type: 'separator' },
-            { label: 'Mở ứng dụng', click: () => { mainWindow.show(); mainWindow.setFullScreen(true); } },
-            { label: 'Khóa ngay lập tức', click: () => { lockApp(); } },
-            { type: 'separator' },
             { label: 'Kiểm tra bản cập nhật mới', click: () => { checkAndDownloadUpdate(); } },
             { type: 'separator' },
             { label: 'Thoát hoàn toàn app', click: () => { 
@@ -340,7 +337,7 @@ function createTray() {
 
         tray.setToolTip('FaceID App - Đang chạy ngầm');
         tray.setContextMenu(contextMenu);
-        tray.on('click', () => { mainWindow.show(); });
+        tray.on('click', () => { lockApp(); });
     } catch (e) {
         console.error("Tray creation failed:", e);
     }
@@ -487,6 +484,20 @@ function isNewerVersion(latest, current) {
     return false;
 }
 
+let popupWindow = null;
+function showStyledPopup(title, msg) {
+    if (popupWindow) popupWindow.close();
+    popupWindow = new BrowserWindow({
+        width: 400, height: 250, frame: false, transparent: true, alwaysOnTop: true,
+        webPreferences: { nodeIntegration: true, contextIsolation: false },
+        icon: path.join(__dirname, 'assets/icon.png')
+    });
+    popupWindow.loadURL(`file://${path.join(__dirname, 'alert.html')}?title=${encodeURIComponent(title)}&msg=${encodeURIComponent(msg)}`);
+    popupWindow.on('closed', () => { popupWindow = null; });
+}
+
+ipcMain.on('close-popup', () => { if (popupWindow) popupWindow.close(); });
+
 function showSystemToast(title, body) {
     if (Notification.isSupported()) {
         new Notification({ title, body, icon: path.join(__dirname, 'assets/icon.png') }).show();
@@ -498,7 +509,9 @@ function checkAndDownloadUpdate() {
         hostname: 'api.github.com',
         path: '/repos/HuyTran1002/FaceID/releases/latest',
         method: 'GET',
-        headers: { 'User-Agent': 'FaceID-AutoUpdater' }
+        headers: { 'User-Agent': 'FaceID-AutoUpdater' },
+        timeout: 15000,
+        rejectUnauthorized: false
     };
 
     https.get(options, (res) => {
@@ -526,14 +539,16 @@ function checkAndDownloadUpdate() {
                         showSystemToast("Lỗi cập nhật", "Không tìm thấy file EXE trong bản phát hành mới.");
                     }
                 } else {
-                    if (mainWindow) mainWindow.webContents.send('update-not-available', "Bạn đang sử dụng phiên bản mới nhất (v" + packageJson.version + ").");
+                    showStyledPopup('Kiểm tra cập nhật', "Bạn đang sử dụng phiên bản mới nhất (v" + packageJson.version + ").");
                 }
             } catch (e) {
                 showSystemToast("Lỗi cập nhật", "Dữ liệu trả về từ GitHub không hợp lệ.");
             }
         });
     }).on('error', (e) => {
-        showSystemToast("Lỗi cập nhật", "Không thể kết nối với GitHub. Vui lòng kiểm tra lại mạng.");
+        showStyledPopup("Lỗi mạng hiển thị", "Tường lửa hoặc mạng công ty quá yếu. Lỗi: " + e.message);
+    }).on('timeout', () => {
+        showStyledPopup("Lỗi cập nhật", "Thời gian kết nối quá lâu. Mạng của bạn quá yếu.");
     });
 }
 
@@ -563,7 +578,7 @@ function installUpdate(downloadUrl) {
         }
 
         const protocol = url.startsWith('https') ? https : http;
-        const request = protocol.get(url, { headers: { 'User-Agent': 'FaceID-AutoUpdater' } }, (res) => {
+        const request = protocol.get(url, { headers: { 'User-Agent': 'FaceID-AutoUpdater' }, timeout: 60000, rejectUnauthorized: false }, (res) => {
             // Redirect: drain response cũ rồi follow
             if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
                 res.resume();
