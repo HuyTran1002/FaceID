@@ -84,8 +84,8 @@ async function initCamera() {
         video.srcObject = cameraStream;
     } catch (err) { 
         console.error("CAMERA ERROR", err);
-        updateUIStatus("LỖI CAMERA: Vui lòng kiểm tra quyền truy cập!");
-        alert("KHÔNG THỂ KHỞI TẠO CAMERA: " + err.message);
+        updateUIStatus("LỖI TRUY CẬP CAMERA!");
+        showNotification("Lỗi Camera", "Không thể khởi tạo camera. Vui lòng kiểm tra cáp hoặc quyền truy cập.\n\nChi tiết: " + err.message);
     }
 }
 
@@ -313,6 +313,10 @@ function triggerNextFrame(delay = 80) {
     }, delay);
 }
 
+// Dùng chung một bảng vẽ (Shared Canvas) để tránh rò rỉ bộ nhớ JS (UI Lag Fix v3.1.5)
+let sharedScanCanvas = null; 
+let sharedScanCtx = null;
+
 function sendFrameToPython() {
     if (!video.videoWidth) return;
     pythonProcessing = true;
@@ -320,15 +324,28 @@ function sendFrameToPython() {
     const targetWidth = 480;
     const scale = targetWidth / video.videoWidth;
     const targetHeight = video.videoHeight * scale;
-    const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = targetWidth; tempCanvas.height = targetHeight;
-    const tctx = tempCanvas.getContext('2d');
-    tctx.translate(tempCanvas.width, 0); tctx.scale(-1, 1);
-    tctx.drawImage(video, 0, 0, targetWidth, targetHeight);
+    
+    if (!sharedScanCanvas) {
+        sharedScanCanvas = document.createElement('canvas');
+        sharedScanCtx = sharedScanCanvas.getContext('2d', { willReadFrequently: true });
+    }
+    
+    // Cập nhật lại kích thước phòng trường hợp video source đổi (hiếm gặp)
+    if (sharedScanCanvas.width !== targetWidth) {
+        sharedScanCanvas.width = targetWidth; 
+        sharedScanCanvas.height = targetHeight;
+    }
+
+    // Xóa bản vẽ cũ, xoay để chống ngược (mirror) và vẽ ảnh mới
+    sharedScanCtx.save();
+    sharedScanCtx.translate(sharedScanCanvas.width, 0); 
+    sharedScanCtx.scale(-1, 1);
+    sharedScanCtx.drawImage(video, 0, 0, targetWidth, targetHeight);
+    sharedScanCtx.restore();
     
     ipcRenderer.send('process-image', {
         mode: isRegistering ? 'register' : 'detect',
-        image_data: tempCanvas.toDataURL('image/jpeg', 0.6),
+        image_data: sharedScanCanvas.toDataURL('image/jpeg', 0.6), // 0.6 compression is enough
         faceName: currentRegisteringName,
         user_data_path: USER_DATA_PATH
     });
