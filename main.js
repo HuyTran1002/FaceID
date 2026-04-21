@@ -523,7 +523,7 @@ function unlockApp() {
 app.whenReady().then(() => {
     // POWER SAVE BLOCKER chuyển vào lockApp (v4.2.0)
     
-    // AutoRun: Ghi trực tiếp Registry Windows (v4.2.4 - Fix Portable EXE Temp Path)
+    // AutoRun: Ghi trực tiếp Registry Windows (v4.2.5 - Fix Registry Syntax & Escaping)
     try {
         app.setLoginItemSettings({ openAtLogin: false }); // Xóa entry cũ
 
@@ -535,10 +535,16 @@ app.whenReady().then(() => {
         }
 
         if (exeToRegister) {
-            const regValue = `"${exeToRegister}"`;
-            const psCmd = "Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'FaceID Security' -Value '" + regValue + "'";
-            spawn('powershell.exe', ['-Command', psCmd], { windowsHide: true });
-            logToFile('AutoRun Registered: ' + regValue);
+            // Sửa lỗi escape \ trong Registry bằng cách ghi file .reg và chạy âm thầm
+            const regValueEscaped = exeToRegister.replace(/\\/g, '\\\\');
+            const regContent = `Windows Registry Editor Version 5.00\r\n\r\n[HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run]\r\n"FaceID Security"="\\"${regValueEscaped}\\""`;
+            
+            const regFilePath = path.join(app.getPath('userData'), 'autorun.reg');
+            fs.writeFileSync(regFilePath, regContent, 'utf16le');
+            
+            spawn('regedit.exe', ['/s', regFilePath], { windowsHide: true });
+            
+            logToFile('AutoRun Registered (.reg method): ' + exeToRegister);
         } else {
             logToFile('AutoRun SKIP: No valid EXE path found.');
         }
