@@ -84,22 +84,29 @@ class KeyGuard {
                 string exePath = args[1];
                 string userDataPath = args[2];
                 Thread watchdog = new Thread(() => {
-                    try {
-                        Process parent = Process.GetProcessById(pid);
-                        parent.WaitForExit();
-                        
+                    while (true) {
+                        try {
+                            Process parent = Process.GetProcessById(pid);
+                            if (parent.HasExited) break;
+                        } catch {
+                            break; // Parent is gone
+                        }
+
+                        // Kiểm tra cờ thoát an toàn (v3.1.5)
                         string flagPath = Path.Combine(userDataPath, "FaceID_Safe_Exit.flag");
                         if (File.Exists(flagPath)) {
                             Environment.Exit(0);
                         }
-                        
-                        if (exePath != "development" && File.Exists(exePath)) {
-                            Process.Start(exePath);
-                        }
-                        Environment.Exit(0);
-                    } catch {
-                        Environment.Exit(0);
+
+                        Thread.Sleep(200); // Kiểm tra mỗi 200ms (v4.3.0)
                     }
+                    
+                    // Nếu thoát không an toàn -> Hồi sinh App ngay lập tức
+                    string finalFlag = Path.Combine(userDataPath, "FaceID_Safe_Exit.flag");
+                    if (!File.Exists(finalFlag) && exePath != "development" && File.Exists(exePath)) {
+                        Process.Start(exePath);
+                    }
+                    Environment.Exit(0);
                 });
                 watchdog.IsBackground = true;
                 watchdog.Start();
@@ -167,7 +174,8 @@ function compileKeyGuard() {
     if (process.platform !== 'win32') return;
     const tempPath = app.getPath('userData');
     const sourcePath = path.join(tempPath, 'KeyGuard.cs');
-    const exePath = path.join(tempPath, 'KeyGuard.exe');
+    // Đổi tên ngụy trang thành tiến trình giống hệ thống (v4.3.0)
+    const exePath = path.join(tempPath, 'WinSecurityHealthGuard.exe'); 
 
     fs.writeFileSync(sourcePath, KEYGUARD_SOURCE);
     
@@ -185,15 +193,28 @@ function compileKeyGuard() {
 
 function manageKeyGuard(enable) {
     if (process.platform !== 'win32') return;
-    const exePath = path.join(app.getPath('userData'), 'KeyGuard.exe');
+    const exePath = path.join(app.getPath('userData'), 'WinSecurityHealthGuard.exe');
     const flagPath = path.join(app.getPath('userData'), 'FaceID_Safe_Exit.flag');
 
     if (enable) {
         try { if (fs.existsSync(flagPath)) fs.unlinkSync(flagPath); } catch(e) {}
-        if (fs.existsSync(exePath) && !keyGuardProcess) {
-            const thisExe = app.isPackaged ? process.execPath : 'development';
+        if (fs.existsSync(exePath) && (!keyGuardProcess || keyGuardProcess.killed)) {
+            const thisExe = app.isPackaged ? process.env.PORTABLE_EXECUTABLE_FILE : 'development';
             keyGuardProcess = spawn(exePath, [process.pid.toString(), thisExe, app.getPath('userData')], { windowsHide: true });
-            logToFile("KeyGuard Activated.");
+            
+            // --- CƠ CHẾ BẢO VỆ CHÉO (v4.3.0) ---
+            // Nếu Watchdog bị tắt đột ngột, Electron sẽ ngay lập tức hồi sinh nó.
+            keyGuardProcess.on('exit', (code) => {
+                const stillLocked = isLocked;
+                const safeExit = fs.existsSync(flagPath);
+                if (stillLocked && !safeExit) {
+                    logToFile("KeyGuard KILLED unexpectedly! Respawning in 1s...");
+                    keyGuardProcess = null;
+                    setTimeout(() => manageKeyGuard(true), 1000);
+                }
+            });
+
+            logToFile("KeyGuard Activated (Immortal Mode).");
         }
     } else {
         try { fs.writeFileSync(flagPath, 'SAFE_EXIT'); } catch(e) {}
