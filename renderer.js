@@ -18,6 +18,7 @@ let USER_DATA_PATH = "";
 let APP_CONFIG = { adminPass: '123456', secretPass: '999999' };
 let currentAuthAction = "";
 let cameraStream = null;
+let currentFPS = 10; // Mặc định 10 FPS để tiết kiệm CPU khi chờ (v4.2.0)
 
 // UI ELEMENTS
 const video = document.getElementById('video');
@@ -306,11 +307,15 @@ function updateUIStatus(msg) {
     if (scanStatusMsg) scanStatusMsg.innerText = msg;
 }
 
-function triggerNextFrame(delay = 80) {
+function triggerNextFrame(delay = -1) {
     if (!isProcessing || !pythonReady) return;
+    
+    // Nếu delay không được set thủ công, dùng FPS linh hoạt (v4.2.0)
+    const finalDelay = delay > 0 ? delay : (1000 / currentFPS);
+    
     setTimeout(() => {
         if (isProcessing && !pythonProcessing) sendFrameToPython();
-    }, delay);
+    }, finalDelay);
 }
 
 // Dùng chung một bảng vẽ (Shared Canvas) để tránh rò rỉ bộ nhớ JS (UI Lag Fix v3.1.5)
@@ -353,7 +358,7 @@ function sendFrameToPython() {
 
 ipcRenderer.on('python-result', (event, result) => {
     pythonProcessing = false;
-    if (isProcessing) triggerNextFrame(30);
+    if (isProcessing) triggerNextFrame(); // Dùng Dynamic Delay mặc định (v4.2.0)
 
     // console.log("AI DEBUG RESULT:", result); // Bật để kiểm tra dữ liệu
 
@@ -364,6 +369,14 @@ ipcRenderer.on('python-result', (event, result) => {
     
     if (result.success) {
         if (result.features) drawFaceSketch(result);
+
+        // --- DYNAMIC AI TURBO MODE v4.2.0 ---
+        // Nếu thấy mặt hoặc đang xác thực, tăng tốc lên 24+ FPS. Nếu không thấy ai, giảm về 10 FPS.
+        if (result.match || result.status === "verifying") {
+            currentFPS = 24; 
+        } else {
+            currentFPS = 10;
+        }
 
         if (result.status === "sculpting") {
             scanProgress = result.progress || 0;
@@ -531,7 +544,11 @@ function saveAdvancedSettings() {
     if (Object.keys(updates).length > 0) {
         ipcRenderer.send('update-config', updates);
         APP_CONFIG = { ...APP_CONFIG, ...updates };
-        document.getElementById('settings-msg').innerText = "Đã lưu cài đặt!";
+        const msgEl = document.getElementById('settings-msg');
+        if (msgEl) {
+            msgEl.innerText = "Đã lưu cài đặt!";
+            setTimeout(() => { msgEl.innerText = ""; }, 3000);
+        }
     }
 }
 
@@ -556,6 +573,13 @@ function openModal(id) {
     const inputs = m.querySelectorAll('input');
     // XÓA TRẮNG TOÀN BỘ Ô NHẬP LIỆU (v3.1.0)
     inputs.forEach(i => { i.value = ''; }); 
+    
+    // XÓA THÔNG BÁO CŨ NẾU LÀ MODAL CÀI ĐẶT (v4.2.1)
+    if (id === 'management-modal') {
+        const msgEl = document.getElementById('settings-msg');
+        if (msgEl) msgEl.innerText = "";
+    }
+
     if (inputs.length > 0) inputs[0].focus();
 }
 
