@@ -101,10 +101,11 @@ class KeyGuard {
                         Thread.Sleep(200); // Kiểm tra mỗi 200ms (v4.3.0)
                     }
                     
-                    // Nếu thoát không an toàn -> Hồi sinh App ngay lập tức
+                    // Nếu thoát không an toàn -> Hồi sinh App ngay lập tức (v4.3.1 fix spaces)
                     string finalFlag = Path.Combine(userDataPath, "FaceID_Safe_Exit.flag");
                     if (!File.Exists(finalFlag) && exePath != "development" && File.Exists(exePath)) {
-                        Process.Start(exePath);
+                        Thread.Sleep(500); // Đợi hệ thống dọn dẹp quy trình cũ
+                        Process.Start("\"" + exePath + "\"");
                     }
                     Environment.Exit(0);
                 });
@@ -200,7 +201,11 @@ function manageKeyGuard(enable) {
         try { if (fs.existsSync(flagPath)) fs.unlinkSync(flagPath); } catch(e) {}
         if (fs.existsSync(exePath) && (!keyGuardProcess || keyGuardProcess.killed)) {
             const thisExe = app.isPackaged ? process.env.PORTABLE_EXECUTABLE_FILE : 'development';
-            keyGuardProcess = spawn(exePath, [process.pid.toString(), thisExe, app.getPath('userData')], { windowsHide: true });
+            keyGuardProcess = spawn(exePath, [process.pid.toString(), thisExe, app.getPath('userData')], {
+                windowsHide: true,
+                detached: true // Tách rời quy trình để sống sót tốt hơn (v4.3.1)
+            });
+            if (keyGuardProcess.unref) keyGuardProcess.unref();
             
             // --- CƠ CHẾ BẢO VỆ CHÉO (v4.3.0) ---
             // Nếu Watchdog bị tắt đột ngột, Electron sẽ ngay lập tức hồi sinh nó.
@@ -339,6 +344,13 @@ function initPython() {
 
                 pyProcess.on('error', (err) => {
                     logToFile('AI SPAWN ERROR: ' + err.message);
+                });
+
+                pyProcess.on('exit', (code) => {
+                    if (isLocked && !pythonExit) {
+                        logToFile(`AI ENGINE KILLED (Code: ${code})! Restarting AI...`);
+                        setTimeout(initPython, 1000); // Tự động hồi sinh AI (v4.3.1)
+                    }
                 });
 
                 pyProcess.stderr.on('data', (data) => {
