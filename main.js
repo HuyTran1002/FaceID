@@ -523,8 +523,13 @@ function unlockApp() {
 app.whenReady().then(() => {
     // POWER SAVE BLOCKER chuyển vào lockApp (v4.2.0)
     
-    // AutoRun: Tự khởi chạy bảo vệ khi bật máy (v4.0.0)
-    app.setLoginItemSettings({ openAtLogin: true });
+    // AutoRun: Tự khởi chạy bảo vệ khi bật máy (Sửa lỗi chỉ hiện bảng Electron mặc định - v4.2.3)
+    const isDev = !app.isPackaged;
+    app.setLoginItemSettings({
+        openAtLogin: true,
+        path: process.execPath,
+        args: isDev ? [path.resolve('.')] : []
+    });
 
     compileKeyGuard();
     createWindow();
