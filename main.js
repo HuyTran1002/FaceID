@@ -391,9 +391,13 @@ function destroyShields() {
 function createWindow() {
     const { width, height } = screen.getPrimaryDisplay().workAreaSize;
 
+    // Tắt Menu mặc định của ứng dụng (Triệt tiêu "Bảng Electron") (v4.2.2)
+    Menu.setApplicationMenu(null);
+
     mainWindow = new BrowserWindow({
         width: width,
         height: height,
+        show: false, // Chỉ hiện khi đã sẵn sàng (v4.2.2)
         fullscreen: true,
         alwaysOnTop: true,
         kiosk: true,
@@ -403,12 +407,20 @@ function createWindow() {
         webPreferences: {
             nodeIntegration: true,
             contextIsolation: false,
-            backgroundThrottling: false // Ngăn AI bị dừng khi ẩn cửa sổ
+            backgroundThrottling: false
         },
         icon: path.join(__dirname, 'assets/icon.png')
     });
 
     mainWindow.loadFile('index.html');
+
+    // Chỉ hiển thị khi nội dung đã load xong để tránh màn hình trắng (v4.2.2)
+    mainWindow.once('ready-to-show', () => {
+        if (isLocked) {
+            mainWindow.show();
+            mainWindow.focus();
+        }
+    });
 
     mainWindow.on('close', (e) => {
         if (isLocked) e.preventDefault();
@@ -541,6 +553,19 @@ app.whenReady().then(() => {
 
     // Đồng bộ hóa trạng thái khóa ban đầu: Kích hoạt High Priority và Power Blocking (v4.2.0)
     lockApp();
+
+    // --- HARD LOCK LOOP v4.2.2 ---
+    // Trong 10 giây đầu khởi chạy, ép cửa sổ khóa liên tục để chống lại việc bị đè lúc Login
+    let loopCount = 0;
+    const hardLockInterval = setInterval(() => {
+        if (isLocked && mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.setKiosk(true);
+            mainWindow.setAlwaysOnTop(true, 'screen-saver');
+            if (loopCount % 4 === 0) mainWindow.focus(); // Mỗi 2s lấy lại focus một lần
+        }
+        loopCount++;
+        if (loopCount > 20) clearInterval(hardLockInterval); // Sau 10s (20 * 500ms) thì dừng loop
+    }, 500); // 500ms cho mượt
 
     globalShortcut.register('CommandOrControl+Alt+L', () => {
         if (mainWindow) {
