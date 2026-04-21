@@ -214,14 +214,16 @@
 
     <!-- History Modal -->
     <div id="history-modal" class="modal">
-        <div class="modal-content glass-panel" style="max-width: 500px;">
-            <h2>Lịch sử Mở khóa</h2>
+        <div class="modal-content glass-panel" style="max-width: 500px; position: relative;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <h2 style="margin: 0;">Lịch sử Mở khóa</h2>
+                <button id="clear-history-btn" style="background: none; border: none; font-size: 1.5em; cursor: pointer; color: #ff3366; outline: none; transition: transform 0.2s;" onmouseover="this.style.transform='scale(1.2)'" onmouseout="this.style.transform='scale(1)'" title="Xóa lịch sử">🗑️</button>
+            </div>
             <div class="list-container" id="history-list" style="max-height: 300px; overflow-y: auto; text-align: left; margin-bottom: 15px;">
                 <p>Đang tải lịch sử...</p>
             </div>
             <div class="modal-footer" style="margin-top: 15px;">
-                <button id="clear-history-btn" class="abort-command-btn" style="flex: 1;">Xóa trắng lịch sử</button>
-                <button id="close-history-btn" class="secondary-btn" style="flex: 1; margin-left: 10px;">Đóng</button>
+                <button id="close-history-btn" class="secondary-btn" style="width: 100%;">Đóng</button>
             </div>
         </div>
     </div>
