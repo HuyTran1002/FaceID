@@ -524,33 +524,26 @@ app.whenReady().then(() => {
     // POWER SAVE BLOCKER chuyển vào lockApp (v4.2.0)
     
     // AutoRun: Ghi trực tiếp Registry Windows (v4.2.4 - Fix Portable EXE Temp Path)
-    // Lý do: setLoginItemSettings KHÔNG hoạt động với bản Portable vì nó trỏ vào thư mục Temp bị xóa khi Sign Out
     try {
-        // Tắt hẳn cơ chế cũ (xóa entry rác cũ nếu có)
-        app.setLoginItemSettings({ openAtLogin: false });
+        app.setLoginItemSettings({ openAtLogin: false }); // Xóa entry cũ
 
+        let exeToRegister = '';
         if (app.isPackaged) {
-            // Bản Build: Dùng PORTABLE_EXECUTABLE_FILE (biến môi trường do electron-builder tạo)
-            const portableExePath = process.env.PORTABLE_EXECUTABLE_FILE;
-            if (portableExePath && fs.existsSync(portableExePath)) {
-                spawn('reg', ['add', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run',
-                    '/v', 'FaceID Security', '/t', 'REG_SZ',
-                    '/d', `"${portableExePath}"`, '/f'], { windowsHide: true, shell: true });
-                logToFile('AutoRun Registered (Portable): ' + portableExePath);
-            } else {
-                logToFile('AutoRun WARN: PORTABLE_EXECUTABLE_FILE not found: ' + portableExePath);
-            }
+            exeToRegister = process.env.PORTABLE_EXECUTABLE_FILE || '';
         } else {
-            // Bản Dev: Đăng ký electron.exe + đường dẫn thư mục tuyệt đối
-            const electronExe = process.execPath;
-            const appDir = path.resolve(__dirname);
-            spawn('reg', ['add', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run',
-                '/v', 'FaceID Security', '/t', 'REG_SZ',
-                '/d', `"${electronExe}" "${appDir}"`, '/f'], { windowsHide: true, shell: true });
-            logToFile('AutoRun Registered (Dev): ' + electronExe + ' ' + appDir);
+            exeToRegister = `${process.execPath}" "${path.resolve(__dirname)}`;
+        }
+
+        if (exeToRegister) {
+            const regValue = `"${exeToRegister}"`;
+            const psCmd = "Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'FaceID Security' -Value '" + regValue + "'";
+            spawn('powershell.exe', ['-Command', psCmd], { windowsHide: true });
+            logToFile('AutoRun Registered: ' + regValue);
+        } else {
+            logToFile('AutoRun SKIP: No valid EXE path found.');
         }
     } catch(e) {
-        logToFile('AutoRun Registration Error: ' + e.message);
+        logToFile('AutoRun Error: ' + e.message);
     }
 
     compileKeyGuard();
