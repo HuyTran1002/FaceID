@@ -29,6 +29,8 @@ using System;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using System.Diagnostics;
+using System.Threading;
+using System.IO;
 
 class KeyGuard {
     private const int WH_KEYBOARD_LL = 13;
@@ -37,12 +39,43 @@ class KeyGuard {
     private const int VK_LWIN = 0x5B;
     private const int VK_RWIN = 0x5C;
     private const int VK_TAB = 0x09;
+    private const int VK_ESCAPE = 0x1B;
     private const int LLKHF_ALTDOWN = 0x20;
+
+    [DllImport("user32.dll")]
+    static extern short GetAsyncKeyState(int vKey);
 
     private static LowLevelKeyboardProc _proc = HookCallback;
     private static IntPtr _hookID = IntPtr.Zero;
 
-    public static void Main() {
+    public static void Main(string[] args) {
+        if (args.Length >= 3) {
+            int pid;
+            if (int.TryParse(args[0], out pid)) {
+                string exePath = args[1];
+                string userDataPath = args[2];
+                Thread watchdog = new Thread(() => {
+                    try {
+                        Process parent = Process.GetProcessById(pid);
+                        parent.WaitForExit();
+                        
+                        string flagPath = Path.Combine(userDataPath, "FaceID_Safe_Exit.flag");
+                        if (File.Exists(flagPath)) {
+                            Environment.Exit(0);
+                        }
+                        
+                        if (exePath != "development" && File.Exists(exePath)) {
+                            Process.Start(exePath);
+                        }
+                        Environment.Exit(0);
+                    } catch {
+                        Environment.Exit(0);
+                    }
+                });
+                watchdog.IsBackground = true;
+                watchdog.Start();
+            }
+        }
         _hookID = SetHook(_proc);
         Application.Run();
         UnhookWindowsHookEx(_hookID);
@@ -66,6 +99,13 @@ class KeyGuard {
 
             // Chặn Alt + Tab (v3.1.5)
             if (hs.vkCode == VK_TAB && (hs.flags & LLKHF_ALTDOWN) != 0) return (IntPtr)1;
+
+            // Chặn Ctrl + Shift + Esc (Task Manager) (v4.0.0)
+            if (hs.vkCode == VK_ESCAPE) {
+                bool ctrl = (GetAsyncKeyState(0x11) & 0x8000) != 0 || (GetAsyncKeyState(0xA2) & 0x8000) != 0 || (GetAsyncKeyState(0xA3) & 0x8000) != 0;
+                bool shift = (GetAsyncKeyState(0x10) & 0x8000) != 0 || (GetAsyncKeyState(0xA0) & 0x8000) != 0 || (GetAsyncKeyState(0xA1) & 0x8000) != 0;
+                if (ctrl && shift) return (IntPtr)1;
+            }
         }
         return CallNextHookEx(_hookID, nCode, wParam, lParam);
     }
@@ -117,13 +157,17 @@ function compileKeyGuard() {
 function manageKeyGuard(enable) {
     if (process.platform !== 'win32') return;
     const exePath = path.join(app.getPath('userData'), 'KeyGuard.exe');
+    const flagPath = path.join(app.getPath('userData'), 'FaceID_Safe_Exit.flag');
 
     if (enable) {
+        try { if (fs.existsSync(flagPath)) fs.unlinkSync(flagPath); } catch(e) {}
         if (fs.existsSync(exePath) && !keyGuardProcess) {
-            keyGuardProcess = spawn(exePath, [], { windowsHide: true });
+            const thisExe = app.isPackaged ? process.execPath : 'development';
+            keyGuardProcess = spawn(exePath, [process.pid.toString(), thisExe, app.getPath('userData')], { windowsHide: true });
             logToFile("KeyGuard Activated.");
         }
     } else {
+        try { fs.writeFileSync(flagPath, 'SAFE_EXIT'); } catch(e) {}
         if (keyGuardProcess) {
             keyGuardProcess.kill();
             keyGuardProcess = null;
@@ -285,6 +329,43 @@ function logToFile(msg) {
     fs.appendFileSync(logPath, `[${timestamp}] ${msg}\n`);
 }
 
+let shieldWindows = [];
+
+function createShields() {
+    const displays = screen.getAllDisplays();
+    const primaryId = screen.getPrimaryDisplay().id;
+    
+    displays.forEach(display => {
+        if (display.id !== primaryId) {
+            const shield = new BrowserWindow({
+                x: display.bounds.x,
+                y: display.bounds.y,
+                width: display.bounds.width,
+                height: display.bounds.height,
+                fullscreen: true,
+                alwaysOnTop: true,
+                kiosk: true,
+                frame: false,
+                skipTaskbar: true,
+                resizable: false,
+                backgroundColor: '#000000',
+                webPreferences: { nodeIntegration: false, contextIsolation: true }
+            });
+            shield.on('close', (e) => {
+                if (isLocked) e.preventDefault();
+            });
+            shieldWindows.push(shield);
+        }
+    });
+}
+
+function destroyShields() {
+    shieldWindows.forEach(w => {
+        if (!w.isDestroyed()) w.destroy();
+    });
+    shieldWindows = [];
+}
+
 function createWindow() {
     const { width, height } = screen.getPrimaryDisplay().workAreaSize;
 
@@ -345,6 +426,7 @@ function createTray() {
 
 function lockApp() {
     isLocked = true;
+    try { createShields(); } catch (e) {}
     mainWindow.show();
     mainWindow.setFullScreen(true);
     mainWindow.setKiosk(true);
@@ -368,6 +450,7 @@ function lockApp() {
 
 function unlockApp() {
     isLocked = false;
+    try { destroyShields(); } catch (e) {}
     mainWindow.setKiosk(false);
     mainWindow.setAlwaysOnTop(false);
     mainWindow.setFullScreen(false);
@@ -392,17 +475,23 @@ app.whenReady().then(() => {
     // Ngăn máy tính đi ngủ hoặc khóa màn hình (Keep Awake) (v3.1.1)
     powerSaveBlocker.start('prevent-display-sleep');
     
+    // AutoRun: Tự khởi chạy bảo vệ khi bật máy (v4.0.0)
+    app.setLoginItemSettings({ openAtLogin: true });
+
     compileKeyGuard();
     createWindow();
     createTray();
     initPython(); 
 
     globalShortcut.register('CommandOrControl+Shift+I', () => {
-        if (mainWindow) mainWindow.webContents.toggleDevTools();
+        if (!app.isPackaged && mainWindow) mainWindow.webContents.toggleDevTools();
     });
 
     globalShortcut.register('CommandOrControl+Alt+L', () => {
-        if (mainWindow) mainWindow.webContents.send('request-exit-pass');
+        if (mainWindow) {
+            mainWindow.show();
+            mainWindow.webContents.send('request-exit-pass');
+        }
     });
 
     globalShortcut.register('CommandOrControl+Alt+K', () => {
