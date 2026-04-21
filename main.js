@@ -101,11 +101,16 @@ class KeyGuard {
                         Thread.Sleep(200); // Kiểm tra mỗi 200ms (v4.3.0)
                     }
                     
-                    // Nếu thoát không an toàn -> Hồi sinh App ngay lập tức (v4.3.1 fix spaces)
+                    // Nếu thoát không an toàn -> Hồi sinh App ngay lập tức (v4.3.2 - Stable Respawn)
                     string finalFlag = Path.Combine(userDataPath, "FaceID_Safe_Exit.flag");
                     if (!File.Exists(finalFlag) && exePath != "development" && File.Exists(exePath)) {
-                        Thread.Sleep(500); // Đợi hệ thống dọn dẹp quy trình cũ
-                        Process.Start("\"" + exePath + "\"");
+                        Thread.Sleep(500); 
+                        try {
+                            ProcessStartInfo psi = new ProcessStartInfo();
+                            psi.FileName = exePath;
+                            psi.UseShellExecute = true;
+                            Process.Start(psi);
+                        } catch {}
                     }
                     Environment.Exit(0);
                 });
@@ -200,10 +205,12 @@ function manageKeyGuard(enable) {
     if (enable) {
         try { if (fs.existsSync(flagPath)) fs.unlinkSync(flagPath); } catch(e) {}
         if (fs.existsSync(exePath) && (!keyGuardProcess || keyGuardProcess.killed)) {
-            const thisExe = app.isPackaged ? process.env.PORTABLE_EXECUTABLE_FILE : 'development';
-            keyGuardProcess = spawn(exePath, [process.pid.toString(), thisExe, app.getPath('userData')], {
+            // Lấy đường dẫn EXE chuẩn: Ưu tiên bản Portable, sau đó đến bản thực thi hiện tại (v4.3.2)
+            const thisExe = process.env.PORTABLE_EXECUTABLE_FILE || app.getPath('exe') || 'development';
+            
+            keyGuardProcess = spawn(exePath, [process.pid.toString(), app.isPackaged ? thisExe : 'development', app.getPath('userData')], {
                 windowsHide: true,
-                detached: true // Tách rời quy trình để sống sót tốt hơn (v4.3.1)
+                detached: true 
             });
             if (keyGuardProcess.unref) keyGuardProcess.unref();
             
