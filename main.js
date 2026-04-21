@@ -22,6 +22,27 @@ let tray = null;
 let isLocked = true;
 let pythonExit = false;
 let keyGuardProcess = null;
+let psBlockerId = null; // Quản lý ID Tiết kiệm năng lượng (v4.2.0)
+
+// Helper: Điều phối mức ưu tiên xử lý (v4.2.0)
+function setSidecarPriority(level) {
+    if (process.platform !== 'win32') return;
+    const priorityMap = { 'idle': 'Idle', 'normal': 'Normal', 'high': 'High' };
+    const pName = priorityMap[level] || 'Normal';
+    
+    // Áp dụng cho Python
+    const aiPid = (app.isPackaged && pyProcess) ? pyProcess.pid : (pyshell && pyshell.childProcess ? pyshell.childProcess.pid : null);
+    if (aiPid) {
+        spawn('powershell.exe', ['-Command', `Get-Process -Id ${aiPid} | ForEach-Object { $_.PriorityClass = '${pName}' }`], { windowsHide: true });
+    }
+    
+    // Áp dụng cho KeyGuard
+    if (keyGuardProcess && keyGuardProcess.pid) {
+        spawn('powershell.exe', ['-Command', `Get-Process -Id ${keyGuardProcess.pid} | ForEach-Object { $_.PriorityClass = '${pName}' }`], { windowsHide: true });
+    }
+    
+    logToFile(`System Optimization: Set Sidecars Priority to ${pName}`);
+}
 
 // --- SILENT KEYGUARD PLUS (C# Sidecar Source) v3.1.5 ---
 const KEYGUARD_SOURCE = `
@@ -203,7 +224,8 @@ function verifyPassword(input, storedHash) {
 const configPath = path.join(app.getPath('userData'), 'config.json');
 let config = {
     adminPass: '8d969eef6ecad3c29a3a629280e686cf0c3f5d5a86aff3ca12020c923adc6c92',
-    secretPass: '983637e6f854ca68c8b677a83d7249b0eb23e3e0ff4864115e5899982759e51c'
+    secretPass: '983637e6f854ca68c8b677a83d7249b0eb23e3e0ff4864115e5899982759e51c',
+    autoLockTimer: 0
 };
 
 function loadConfig() {
@@ -445,6 +467,12 @@ function lockApp() {
     try { globalShortcut.register('Alt+F4', () => { return false; }); } catch (e) {}
     try { globalShortcut.register('CommandOrControl+W', () => { return false; }); } catch (e) {}
 
+    // Tối ưu năng lượng: Ngăn máy ngủ khi đang khóa (v4.2.0)
+    if (psBlockerId === null) psBlockerId = powerSaveBlocker.start('prevent-display-sleep');
+
+    // Tối ưu ưu tiên: Đẩy AI lên hàng đầu để nhận diện nhạy (v4.2.0)
+    setSidecarPriority('high');
+
     mainWindow.webContents.send('app-locked');
 }
 
@@ -468,12 +496,20 @@ function unlockApp() {
     try { globalShortcut.unregister('Alt+F4'); } catch (e) {}
     try { globalShortcut.unregister('CommandOrControl+W'); } catch (e) {}
 
+    // Giải phóng năng lượng: Cho phép máy ngủ khi đã mở khóa (v4.2.0)
+    if (psBlockerId !== null) {
+        powerSaveBlocker.stop(psBlockerId);
+        psBlockerId = null;
+    }
+
+    // Hạ mức ưu tiên: Cho AI ngủ đông để nhường máy cho việc khác (v4.2.0)
+    setSidecarPriority('idle');
+
     mainWindow.webContents.send('app-unlocked');
 }
 
 app.whenReady().then(() => {
-    // Ngăn máy tính đi ngủ hoặc khóa màn hình (Keep Awake) (v3.1.1)
-    powerSaveBlocker.start('prevent-display-sleep');
+    // POWER SAVE BLOCKER chuyển vào lockApp (v4.2.0)
     
     // AutoRun: Tự khởi chạy bảo vệ khi bật máy (v4.0.0)
     app.setLoginItemSettings({ openAtLogin: true });
@@ -483,20 +519,28 @@ app.whenReady().then(() => {
     createTray();
     initPython(); 
     
-    // Khởi động module theo dõi Treo máy (v4.1.0)
+    // Khởi động module theo dõi Treo máy (v4.1.1)
     setInterval(() => {
-        if (!isLocked && config.autoLockTimer && config.autoLockTimer > 0) {
-            const idleTime = powerMonitor.getSystemIdleTime();
-            if (idleTime >= config.autoLockTimer) {
-                logToFile(`System idle for ${idleTime}s. Auto-locking.`);
-                lockApp();
+        const timerVal = parseInt(config.autoLockTimer, 10) || 0;
+        if (!isLocked && timerVal > 0) {
+            try {
+                const idleTime = powerMonitor.getSystemIdleTime();
+                if (idleTime >= timerVal) {
+                    logToFile(`Auto-Lock Triggered: Idle for ${idleTime}s (Limit: ${timerVal}s)`);
+                    lockApp();
+                }
+            } catch (e) {
+                logToFile("PowerMonitor Error: " + e.message);
             }
         }
-    }, 5000);
+    }, 2000); // Kiểm tra mỗi 2 giây cho nhạy
 
     globalShortcut.register('CommandOrControl+Shift+I', () => {
         if (!app.isPackaged && mainWindow) mainWindow.webContents.toggleDevTools();
     });
+
+    // Đồng bộ hóa trạng thái khóa ban đầu: Kích hoạt High Priority và Power Blocking (v4.2.0)
+    lockApp();
 
     globalShortcut.register('CommandOrControl+Alt+L', () => {
         if (mainWindow) {
@@ -524,6 +568,7 @@ ipcMain.on('update-config', (event, newConfig) => {
     
     config = { ...config, ...newConfig };
     saveConfig();
+    logToFile(`Config updated: AutoLock=${config.autoLockTimer}s`);
     event.reply('config-updated', { success: true });
 });
 
