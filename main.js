@@ -24,6 +24,14 @@ let pythonExit = false;
 let keyGuardProcess = null;
 let psBlockerId = null; // Quản lý ID Tiết kiệm năng lượng (v4.2.0)
 
+// --- TRÌNH XỬ LÝ LỖI TOÀN CỤC (v4.2.6) ---
+process.on('uncaughtException', (err) => {
+    logToFile(`CRITICAL ERROR (Uncaught): ${err.message}\nStack: ${err.stack}`);
+});
+process.on('unhandledRejection', (reason) => {
+    logToFile(`CRITICAL ERROR (Unhandled): ${reason}`);
+});
+
 // Helper: Điều phối mức ưu tiên xử lý (v4.2.0)
 function setSidecarPriority(level) {
     if (process.platform !== 'win32') return;
@@ -397,7 +405,7 @@ function createWindow() {
     mainWindow = new BrowserWindow({
         width: width,
         height: height,
-        show: false, // Chỉ hiện khi đã sẵn sàng (v4.2.2)
+        show: true, // Hiển thị ngay (v4.2.6 - Fix lỗi đen màn hình)
         fullscreen: true,
         alwaysOnTop: true,
         kiosk: true,
@@ -414,14 +422,7 @@ function createWindow() {
 
     mainWindow.loadFile('index.html');
 
-    // Chỉ hiển thị khi nội dung đã load xong để tránh màn hình trắng (v4.2.2)
-    mainWindow.once('ready-to-show', () => {
-        if (isLocked) {
-            mainWindow.show();
-            mainWindow.focus();
-        }
-    });
-
+    // Chặn phím hệ thống nếu có thể (v4.2.6)
     mainWindow.on('close', (e) => {
         if (isLocked) e.preventDefault();
     });
@@ -429,6 +430,7 @@ function createWindow() {
     mainWindow.on('blur', () => {
         if (isLocked) {
             mainWindow.setAlwaysOnTop(true, 'screen-saver');
+            mainWindow.setKiosk(true); // Ép lại kiosk
             mainWindow.focus();
         }
     });
@@ -523,33 +525,23 @@ function unlockApp() {
 app.whenReady().then(() => {
     // POWER SAVE BLOCKER chuyển vào lockApp (v4.2.0)
     
-    // AutoRun: Ghi trực tiếp Registry Windows (v4.2.5 - Fix Registry Syntax & Escaping)
+    // AutoRun chuẩn hóa (v4.2.6 - Sửa lỗi .reg file gây crash)
     try {
-        app.setLoginItemSettings({ openAtLogin: false }); // Xóa entry cũ
-
-        let exeToRegister = '';
-        if (app.isPackaged) {
-            exeToRegister = process.env.PORTABLE_EXECUTABLE_FILE || '';
+        const portablePath = process.env.PORTABLE_EXECUTABLE_FILE;
+        if (app.isPackaged && portablePath) {
+            // Lưu trực tiếp file EXE vào Registry thông qua PowerShell (Ổn định nhất cho Portable)
+            const psCmd = `Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'FaceID Security' -Value '"${portablePath}"'`;
+            spawn('powershell.exe', ['-Command', psCmd], { windowsHide: true });
         } else {
-            exeToRegister = `${process.execPath}" "${path.resolve(__dirname)}`;
-        }
-
-        if (exeToRegister) {
-            // Sửa lỗi escape \ trong Registry bằng cách ghi file .reg và chạy âm thầm
-            const regValueEscaped = exeToRegister.replace(/\\/g, '\\\\');
-            const regContent = `Windows Registry Editor Version 5.00\r\n\r\n[HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run]\r\n"FaceID Security"="\\"${regValueEscaped}\\""`;
-            
-            const regFilePath = path.join(app.getPath('userData'), 'autorun.reg');
-            fs.writeFileSync(regFilePath, regContent, 'utf16le');
-            
-            spawn('regedit.exe', ['/s', regFilePath], { windowsHide: true });
-            
-            logToFile('AutoRun Registered (.reg method): ' + exeToRegister);
-        } else {
-            logToFile('AutoRun SKIP: No valid EXE path found.');
+            // Trong môi trường Dev hoặc bản cài đặt thường
+            app.setLoginItemSettings({
+                openAtLogin: true,
+                path: process.execPath,
+                args: app.isPackaged ? [] : [path.resolve('.')]
+            });
         }
     } catch(e) {
-        logToFile('AutoRun Error: ' + e.message);
+        logToFile('AutoRun Registration Error: ' + e.message);
     }
 
     compileKeyGuard();
