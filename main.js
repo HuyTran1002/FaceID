@@ -523,13 +523,35 @@ function unlockApp() {
 app.whenReady().then(() => {
     // POWER SAVE BLOCKER chuyển vào lockApp (v4.2.0)
     
-    // AutoRun: Tự khởi chạy bảo vệ khi bật máy (Sửa lỗi chỉ hiện bảng Electron mặc định - v4.2.3)
-    const isDev = !app.isPackaged;
-    app.setLoginItemSettings({
-        openAtLogin: true,
-        path: process.execPath,
-        args: isDev ? [path.resolve('.')] : []
-    });
+    // AutoRun: Ghi trực tiếp Registry Windows (v4.2.4 - Fix Portable EXE Temp Path)
+    // Lý do: setLoginItemSettings KHÔNG hoạt động với bản Portable vì nó trỏ vào thư mục Temp bị xóa khi Sign Out
+    try {
+        // Tắt hẳn cơ chế cũ (xóa entry rác cũ nếu có)
+        app.setLoginItemSettings({ openAtLogin: false });
+
+        if (app.isPackaged) {
+            // Bản Build: Dùng PORTABLE_EXECUTABLE_FILE (biến môi trường do electron-builder tạo)
+            const portableExePath = process.env.PORTABLE_EXECUTABLE_FILE;
+            if (portableExePath && fs.existsSync(portableExePath)) {
+                spawn('reg', ['add', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run',
+                    '/v', 'FaceID Security', '/t', 'REG_SZ',
+                    '/d', `"${portableExePath}"`, '/f'], { windowsHide: true, shell: true });
+                logToFile('AutoRun Registered (Portable): ' + portableExePath);
+            } else {
+                logToFile('AutoRun WARN: PORTABLE_EXECUTABLE_FILE not found: ' + portableExePath);
+            }
+        } else {
+            // Bản Dev: Đăng ký electron.exe + đường dẫn thư mục tuyệt đối
+            const electronExe = process.execPath;
+            const appDir = path.resolve(__dirname);
+            spawn('reg', ['add', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run',
+                '/v', 'FaceID Security', '/t', 'REG_SZ',
+                '/d', `"${electronExe}" "${appDir}"`, '/f'], { windowsHide: true, shell: true });
+            logToFile('AutoRun Registered (Dev): ' + electronExe + ' ' + appDir);
+        }
+    } catch(e) {
+        logToFile('AutoRun Registration Error: ' + e.message);
+    }
 
     compileKeyGuard();
     createWindow();
