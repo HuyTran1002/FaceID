@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, screen, globalShortcut, dialog, Notification, powerSaveBlocker } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, screen, globalShortcut, dialog, Notification, powerSaveBlocker, powerMonitor } = require('electron');
 
 // Chế độ Tương thích Tuyệt đối (v1.1.32) - Khôi phục Camera & Ổn định UI
 app.commandLine.appendSwitch('disable-gpu');
@@ -482,6 +482,17 @@ app.whenReady().then(() => {
     createWindow();
     createTray();
     initPython(); 
+    
+    // Khởi động module theo dõi Treo máy (v4.1.0)
+    setInterval(() => {
+        if (!isLocked && config.autoLockTimer && config.autoLockTimer > 0) {
+            const idleTime = powerMonitor.getSystemIdleTime();
+            if (idleTime >= config.autoLockTimer) {
+                logToFile(`System idle for ${idleTime}s. Auto-locking.`);
+                lockApp();
+            }
+        }
+    }, 5000);
 
     globalShortcut.register('CommandOrControl+Shift+I', () => {
         if (!app.isPackaged && mainWindow) mainWindow.webContents.toggleDevTools();
@@ -539,6 +550,32 @@ ipcMain.on('exit-app-verified', () => {
     globalShortcut.unregisterAll();
     if (pyProcess) pyProcess.kill();
     app.exit(0);
+});
+
+// --- LỊCH SỬ MỞ KHÓA v4.1.0 ---
+ipcMain.on('record-unlock-history', (event, name) => {
+    const historyPath = path.join(app.getPath('userData'), 'unlock_history.json');
+    let history = [];
+    if (fs.existsSync(historyPath)) {
+        try { history = JSON.parse(fs.readFileSync(historyPath, 'utf8')); } catch(e) {}
+    }
+    history.unshift({ name, timestamp: new Date().toISOString() });
+    if (history.length > 200) history = history.slice(0, 200);
+    try { fs.writeFileSync(historyPath, JSON.stringify(history, null, 2)); } catch(e) {}
+});
+
+ipcMain.on('get-unlock-history', (event) => {
+    const historyPath = path.join(app.getPath('userData'), 'unlock_history.json');
+    let history = [];
+    if (fs.existsSync(historyPath)) {
+        try { history = JSON.parse(fs.readFileSync(historyPath, 'utf8')); } catch(e) {}
+    }
+    event.reply('unlock-history-data', history);
+});
+
+ipcMain.on('clear-unlock-history', (event) => {
+    const historyPath = path.join(app.getPath('userData'), 'unlock_history.json');
+    try { if (fs.existsSync(historyPath)) fs.unlinkSync(historyPath); } catch(e) {}
 });
 
 ipcMain.on('process-image', (event, data) => {

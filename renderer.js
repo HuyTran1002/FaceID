@@ -410,6 +410,8 @@ ipcRenderer.on('python-result', (event, result) => {
                 const welcomeName = result.match ? result.match.toUpperCase() : "MASTER";
                 const isStrict = result.security_level === "STRICT";
                 
+                ipcRenderer.send('record-unlock-history', welcomeName);
+                
                 updateUIStatus(`XIN CHÀO: ${welcomeName}!`);
                 if (progressBar) progressBar.style.width = '100%';
                 
@@ -482,7 +484,10 @@ ipcRenderer.on('verify-password-result', (event, { isValid, type }) => {
             openModal('naming-modal');
         } else {
             if (currentAuthAction === 'settings') loadAndShowFaceList();
-            else if (currentAuthAction === 'exit') ipcRenderer.send('exit-app-verified');
+            else if (currentAuthAction === 'exit') {
+                ipcRenderer.send('record-unlock-history', "Mở bằng Mật khẩu (Admin)");
+                ipcRenderer.send('exit-app-verified');
+            }
         }
     } else {
         errorMsg.innerText = type === 'secret' ? "Mật mã USER không chính xác!" : "Mật mã ADMIN không chính xác!";
@@ -517,13 +522,16 @@ function loadAndShowFaceList() {
 function saveAdvancedSettings() {
     const newAdmin = document.getElementById('new-admin-pass').value;
     const newSecret = document.getElementById('new-secret-pass').value;
+    const autoLockTimer = parseInt(document.getElementById('auto-lock-timer').value, 10);
     const updates = {};
     if (newAdmin) updates.adminPass = newAdmin;
     if (newSecret) updates.secretPass = newSecret;
+    updates.autoLockTimer = autoLockTimer;
+    
     if (Object.keys(updates).length > 0) {
         ipcRenderer.send('update-config', updates);
         APP_CONFIG = { ...APP_CONFIG, ...updates };
-        document.getElementById('settings-msg').innerText = "Đã cập nhật mật khẩu!";
+        document.getElementById('settings-msg').innerText = "Đã lưu cài đặt!";
     }
 }
 
@@ -562,7 +570,14 @@ function showNotification(title, msg) {
 
 function loadSettings() { ipcRenderer.send('get-user-data-path'); }
 ipcRenderer.on('user-data-path', (event, p, config) => { 
-    USER_DATA_PATH = p; if (config) APP_CONFIG = config; 
+    USER_DATA_PATH = p; 
+    if (config) {
+        APP_CONFIG = config; 
+        if (config.autoLockTimer !== undefined) {
+            const timerSelect = document.getElementById('auto-lock-timer');
+            if (timerSelect) timerSelect.value = config.autoLockTimer;
+        }
+    }
 });
 
 // KHÔI PHỤC IPC PHÍM TẮT (v2.3.2.2)
@@ -628,3 +643,38 @@ document.getElementById('update-yes-btn').addEventListener('click', () => {
 document.getElementById('update-no-btn').addEventListener('click', () => {
     closeModal('update-modal');
 });
+
+// --- LỊCH SỬ MỞ KHÓA v4.1.0 ---
+document.getElementById('view-history-btn')?.addEventListener('click', () => {
+    ipcRenderer.send('get-unlock-history');
+});
+
+ipcRenderer.on('unlock-history-data', (event, history) => {
+    const list = document.getElementById('history-list');
+    list.innerHTML = "";
+    if (!history || history.length === 0) {
+        list.innerHTML = "<p>Chưa có dữ liệu mở khóa.</p>";
+    } else {
+        history.forEach(h => {
+            const item = document.createElement('div');
+            item.className = 'face-item';
+            const date = new Date(h.timestamp);
+            const timeStr = date.toLocaleString('vi-VN');
+            item.innerHTML = `<span style="color: #00f2ff;">${h.name}</span><span style="font-size: 0.85em; color: #888;">${timeStr}</span>`;
+            list.appendChild(item);
+        });
+    }
+    openModal('history-modal');
+});
+
+document.getElementById('close-history-btn')?.addEventListener('click', () => {
+    closeModal('history-modal');
+});
+
+document.getElementById('clear-history-btn')?.addEventListener('click', () => {
+    ipcRenderer.send('clear-unlock-history');
+    document.getElementById('history-list').innerHTML = "<p>Đã xóa trắng lịch sử.</p>";
+});
+
+// Event listener cho nút save settings được bind theo HTML id (v4.1.0)
+document.getElementById('save-settings-btn')?.addEventListener('click', saveAdvancedSettings);

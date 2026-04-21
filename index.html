@@ -136,7 +136,10 @@
             <h2>Quản lý & Cài đặt Nâng cao</h2>
 
             <div class="settings-section">
-                <h3>Danh sách khuôn mặt</h3>
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <h3>Danh sách khuôn mặt</h3>
+                    <button id="view-history-btn" class="secondary-btn" style="padding: 5px 10px; font-size: 0.9em;">Lịch sử mở khóa</button>
+                </div>
                 <div class="list-container" id="face-list">
                     <p>Đang tải danh sách...</p>
                 </div>
@@ -146,6 +149,17 @@
                 style="margin-top: 20px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 15px;">
                 <h3>Cài đặt bảo mật</h3>
                 <div class="settings-group">
+                    <label>Hẹn giờ tự khóa (Treo máy)</label>
+                    <select id="auto-lock-timer" style="width: 100%; padding: 8px; background: rgba(0,0,0,0.5); border: 1px solid rgba(0,242,255,0.3); color: white; border-radius: 5px; outline: none;">
+                        <option value="0">Không tự động khóa</option>
+                        <option value="30">30 Giây</option>
+                        <option value="60">1 Phút</option>
+                        <option value="300">5 Phút</option>
+                        <option value="600">10 Phút</option>
+                        <option value="1800">30 Phút</option>
+                    </select>
+                </div>
+                <div class="settings-group" style="margin-top: 10px;">
                     <label>Mật khẩu Admin (Tầng 1)</label>
                     <input type="password" id="new-admin-pass" placeholder="Mật khẩu mới..." autocomplete="new-password">
                 </div>
@@ -194,6 +208,20 @@
             <div class="modal-footer" id="update-footer">
                 <button id="update-yes-btn" class="primary-btn">Tải & Cài Đặt Khép Kín</button>
                 <button id="update-no-btn" class="secondary-btn">Bỏ Qua</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- History Modal -->
+    <div id="history-modal" class="modal">
+        <div class="modal-content glass-panel" style="max-width: 500px;">
+            <h2>Lịch sử Mở khóa</h2>
+            <div class="list-container" id="history-list" style="max-height: 300px; overflow-y: auto; text-align: left; margin-bottom: 15px;">
+                <p>Đang tải lịch sử...</p>
+            </div>
+            <div class="modal-footer" style="margin-top: 15px;">
+                <button id="clear-history-btn" class="abort-command-btn" style="flex: 1;">Xóa trắng lịch sử</button>
+                <button id="close-history-btn" class="secondary-btn" style="flex: 1; margin-left: 10px;">Đóng</button>
             </div>
         </div>
     </div>
