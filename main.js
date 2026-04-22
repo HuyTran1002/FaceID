@@ -144,6 +144,14 @@ class KeyGuard {
 
     private static IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam) {
         if (nCode >= 0 && (wParam == (IntPtr)WM_KEYDOWN || wParam == (IntPtr)WM_SYSKEYDOWN)) {
+            // Kiểm tra xem chế độ Khóa có đang kích hoạt không (v4.4.0)
+            // Lấy đường dẫn thư mục AppData từ tham số khởi tạo hoặc từ biến môi trường
+            string userDataPath = Environment.GetCommandLineArgs().Length >= 4 ? Environment.GetCommandLineArgs()[3] : "";
+            if (!string.IsNullOrEmpty(userDataPath)) {
+                string lockFlag = Path.Combine(userDataPath, "FaceID_Lock_Active.flag");
+                if (!File.Exists(lockFlag)) return CallNextHookEx(_hookID, nCode, wParam, lParam);
+            }
+
             KBDLLHOOKSTRUCT hs = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(KBDLLHOOKSTRUCT));
             
             // Chặn phím Windows
@@ -227,9 +235,8 @@ function manageKeyGuard(enable) {
             // --- CƠ CHẾ BẢO VỆ CHÉO (v4.3.0) ---
             // Nếu Watchdog bị tắt đột ngột, Electron sẽ ngay lập tức hồi sinh nó.
             keyGuardProcess.on('exit', (code) => {
-                const stillLocked = isLocked;
                 const safeExit = fs.existsSync(flagPath);
-                if (stillLocked && !safeExit) {
+                if (!safeExit) {
                     logToFile("KeyGuard KILLED unexpectedly! Respawning in 1s...");
                     keyGuardProcess = null;
                     setTimeout(() => manageKeyGuard(true), 1000);
@@ -516,6 +523,13 @@ function createTray() {
 function lockApp() {
     isLocked = true;
     try { createShields(); } catch (e) {}
+    
+    // Ghi nhớ trạng thái khóa cho Watchdog và Hồi sinh (v4.4.0)
+    try {
+        fs.writeFileSync(path.join(app.getPath('userData'), 'FaceID_Lock_Active.flag'), 'LOCKED');
+        fs.writeFileSync(path.join(app.getPath('userData'), 'FaceID_Status.tmp'), 'LOCKED');
+    } catch(e) {}
+
     mainWindow.show();
     mainWindow.setFullScreen(true);
     mainWindow.setKiosk(true);
@@ -546,6 +560,14 @@ function lockApp() {
 function unlockApp() {
     isLocked = false;
     try { destroyShields(); } catch (e) {}
+    
+    // Ghi nhớ trạng thái mở cho Watchdog và Hồi sinh (v4.4.0)
+    try {
+        const lockFlag = path.join(app.getPath('userData'), 'FaceID_Lock_Active.flag');
+        if (fs.existsSync(lockFlag)) fs.unlinkSync(lockFlag);
+        fs.writeFileSync(path.join(app.getPath('userData'), 'FaceID_Status.tmp'), 'UNLOCKED');
+    } catch(e) {}
+
     mainWindow.setKiosk(false);
     mainWindow.setAlwaysOnTop(false);
     mainWindow.setFullScreen(false);
@@ -556,8 +578,9 @@ function unlockApp() {
     if (app.isPackaged && pyProcess && !pyProcess.killed) pyProcess.stdin.write(JSON.stringify(unlockData) + '\n');
     else if (pyshell) pyshell.send(unlockData);
 
-    // Mở khóa các phím thoát hiểm
-    manageKeyGuard(false);
+    // Mở khóa các phím thoát hiểm (v4.4.0 - KHÔNG tắt Watchdog để duy trì bảo vệ chạy ngầm)
+    // manageKeyGuard(false); // <--- BỎ DÒNG NÀY
+    
     try { globalShortcut.unregister('Alt+Tab'); } catch (e) {}
     try { globalShortcut.unregister('CommandOrControl+Esc'); } catch (e) {}
     try { globalShortcut.unregister('Alt+F4'); } catch (e) {}
@@ -626,8 +649,29 @@ app.whenReady().then(() => {
         if (!app.isPackaged && mainWindow) mainWindow.webContents.toggleDevTools();
     });
 
-    // Đồng bộ hóa trạng thái khóa ban đầu: Kích hoạt High Priority và Power Blocking (v4.2.0)
-    lockApp();
+    // Kiểm tra trạng thái hồi sinh (v4.4.0)
+    let shouldLockOnStartup = true;
+    try {
+        const statusFile = path.join(app.getPath('userData'), 'FaceID_Status.tmp');
+        if (fs.existsSync(statusFile)) {
+            const status = fs.readFileSync(statusFile, 'utf8');
+            // Nếu vừa reboot máy (mất điện/reset) thì file tmp có thể vẫn là UNLOCKED 
+            // nhưng app chạy từ Registry thì nên mặc định LOCK.
+            // Trừ khi đây là một lần "Hồi sinh" (Watchdog restart) thì mới giữ UNLOCKED.
+            if (status === 'UNLOCKED') shouldLockOnStartup = false;
+            fs.unlinkSync(statusFile); // Xóa sau khi dùng để tránh dính cho lần boot sau
+        }
+    } catch(e) {}
+
+    if (shouldLockOnStartup) {
+        lockApp();
+    } else {
+        // Hồi sinh lặng lẽ ở tray (v4.4.0)
+        isLocked = false;
+        manageKeyGuard(true); // Bật watchdog để bảo vệ tiến trình
+        setSidecarPriority('idle');
+        if (mainWindow) mainWindow.hide();
+    }
 
     // --- HARD LOCK LOOP v4.2.2 ---
     // Trong 10 giây đầu khởi chạy, ép cửa sổ khóa liên tục để chống lại việc bị đè lúc Login
