@@ -78,49 +78,59 @@ class KeyGuard {
     private static IntPtr _hookID = IntPtr.Zero;
 
     public static void Main(string[] args) {
-        if (args.Length >= 3) {
-            int pid;
-            if (int.TryParse(args[0], out pid)) {
-                string exePath = args[1];
-                string userDataPath = args[2];
-                Thread watchdog = new Thread(() => {
-                    while (true) {
-                        try {
-                            Process parent = Process.GetProcessById(pid);
-                            if (parent.HasExited) break;
-                        } catch {
-                            break; // Parent is gone
-                        }
+        // Cơ chế Mutex để đảm bảo chỉ có 1 Watchdog chạy (v4.3.3)
+        bool createdNew;
+        using (Mutex mutex = new Mutex(true, "FaceID_Watchdog_Mutex", out createdNew)) {
+            if (!createdNew) return;
 
-                        // Kiểm tra cờ thoát an toàn (v3.1.5)
-                        string flagPath = Path.Combine(userDataPath, "FaceID_Safe_Exit.flag");
-                        if (File.Exists(flagPath)) {
-                            Environment.Exit(0);
-                        }
+            if (args.Length >= 3) {
+                int pid;
+                if (int.TryParse(args[0], out pid)) {
+                    string exePath = args[1];
+                    string userDataPath = args[2];
+                    int deathCounter = 0; // Đếm số lần xác nhận app chết (v4.3.3)
 
-                        Thread.Sleep(200); // Kiểm tra mỗi 200ms (v4.3.0)
-                    }
-                    
-                    // Nếu thoát không an toàn -> Hồi sinh App ngay lập tức (v4.3.2 - Stable Respawn)
-                    string finalFlag = Path.Combine(userDataPath, "FaceID_Safe_Exit.flag");
-                    if (!File.Exists(finalFlag) && exePath != "development" && File.Exists(exePath)) {
-                        Thread.Sleep(500); 
-                        try {
-                            ProcessStartInfo psi = new ProcessStartInfo();
-                            psi.FileName = exePath;
-                            psi.UseShellExecute = true;
-                            Process.Start(psi);
-                        } catch {}
-                    }
-                    Environment.Exit(0);
-                });
-                watchdog.IsBackground = true;
-                watchdog.Start();
+                    Thread watchdog = new Thread(() => {
+                        while (true) {
+                            bool isAlive = false;
+                            try {
+                                Process parent = Process.GetProcessById(pid);
+                                if (!parent.HasExited) isAlive = true;
+                            } catch {}
+
+                            if (!isAlive) {
+                                deathCounter++;
+                                if (deathCounter >= 3) break; // Xác nhận chết 3 lần (0.6s) thì mới hồi sinh
+                            } else {
+                                deathCounter = 0; // Reset nếu app vẫn sống
+                            }
+
+                            // Kiểm tra cờ thoát an toàn (v3.1.5)
+                            string flagPath = Path.Combine(userDataPath, "FaceID_Safe_Exit.flag");
+                            if (File.Exists(flagPath)) Environment.Exit(0);
+
+                            Thread.Sleep(200); 
+                        }
+                        
+                        // Hồi sinh App
+                        string finalFlag = Path.Combine(userDataPath, "FaceID_Safe_Exit.flag");
+                        if (!File.Exists(finalFlag) && exePath != "development" && File.Exists(exePath)) {
+                            Thread.Sleep(500); 
+                            try {
+                                ProcessStartInfo psi = new ProcessStartInfo { FileName = exePath, UseShellExecute = true };
+                                Process.Start(psi);
+                            } catch {}
+                        }
+                        Environment.Exit(0);
+                    });
+                    watchdog.IsBackground = true;
+                    watchdog.Start();
+                }
             }
+            _hookID = SetHook(_proc);
+            Application.Run();
+            UnhookWindowsHookEx(_hookID);
         }
-        _hookID = SetHook(_proc);
-        Application.Run();
-        UnhookWindowsHookEx(_hookID);
     }
 
     private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
@@ -306,7 +316,10 @@ if (!gotTheLock) {
     app.on('second-instance', (event, commandLine, workingDirectory) => {
         if (mainWindow) {
             if (mainWindow.isMinimized()) mainWindow.restore();
-            lockApp(); 
+            // Chỉ gọi lockApp nếu đang không ở trạng thái Khóa (v4.3.3 - Fix lỗi nháy máy)
+            if (!isLocked) {
+                lockApp(); 
+            }
             mainWindow.focus();
         }
     });
@@ -563,7 +576,11 @@ function unlockApp() {
 }
 
 app.whenReady().then(() => {
-    // POWER SAVE BLOCKER chuyển vào lockApp (v4.2.0)
+    // Dọn dẹp trạng thái lỗi cũ (v4.3.3)
+    try {
+        const flagPath = path.join(app.getPath('userData'), 'FaceID_Safe_Exit.flag');
+        if (fs.existsSync(flagPath)) fs.unlinkSync(flagPath);
+    } catch(e) {}
     
     // AutoRun chuẩn hóa (v4.2.6 - Sửa lỗi .reg file gây crash)
     try {
