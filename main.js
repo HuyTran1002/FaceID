@@ -240,26 +240,28 @@ function compileUpdater() {
             }
 
             if (fs.existsSync(checkerTempPath) && fs.existsSync(formTempPath)) {
-                logToFile("Compiling C# Updater Sidecar...");
+                logToFile("Compiling C# Updater Sidecar (WebClient Mode)...");
                 const compile = spawn(cscPath, [
                     '/target:winexe', 
                     `/out:"${exePath}"`, 
                     '/reference:System.Windows.Forms.dll',
                     '/reference:System.Drawing.dll',
-                    '/reference:System.Net.Http.dll',
                     '/reference:System.Xml.dll',
                     '/reference:System.Xml.Linq.dll',
                     `"${checkerTempPath}"`, 
                     `"${formTempPath}"`
                 ], { shell: true });
                 
+                let compileLogs = "";
+                compile.stdout.on('data', (data) => { compileLogs += data.toString(); });
+                compile.stderr.on('data', (data) => { compileLogs += data.toString(); });
+
                 compile.on('close', (code) => {
                     if (code === 0) {
                         logToFile("FaceID Updater Compiled Successfully.");
-                        // Dọn dẹp file .cs tạm sau khi xong
                         try { fs.unlinkSync(checkerTempPath); fs.unlinkSync(formTempPath); } catch(e) {}
                     } else {
-                        logToFile("FaceID Updater Compilation Failed with code: " + code);
+                        logToFile("FaceID Updater Compilation FAILED! Output:\n" + compileLogs);
                     }
                 });
             } else {

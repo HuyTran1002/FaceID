@@ -2,7 +2,7 @@ using System;
 using System.Reflection;
 using System.Windows.Forms;
 using System.IO;
-using System.Net.Http;
+using System.Net;
 using System.Threading.Tasks;
 
 namespace FaceID
@@ -38,12 +38,14 @@ namespace FaceID
             string logPath = Path.Combine(Path.GetTempPath(), "FaceID_update_debug.log");
             try
             {
-                using (var client = new HttpClient())
+                // Sử dụng WebClient để tương thích tối đa với .NET cũ
+                using (WebClient client = new WebClient())
                 {
-                    client.Timeout = TimeSpan.FromSeconds(20);
-                    client.DefaultRequestHeaders.UserAgent.ParseAdd("FaceID-Updater/5.0");
+                    client.Headers.Add("User-Agent", "FaceID-Updater/5.0");
+                    // Ép kiểu bảo mật TLS 1.2 cho GitHub (Bắt buộc)
+                    ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072; 
 
-                    var response = await client.GetStringAsync(GITHUB_API_RELEASE_URL);
+                    string response = client.DownloadString(GITHUB_API_RELEASE_URL);
                     
                     string tagName = ExtractValueFromJson(response, "tag_name");
                     string versionString = tagName.TrimStart('v', 'V');
@@ -53,15 +55,10 @@ namespace FaceID
                     if (Version.TryParse(versionString, out latestVersion))
                     {
                         bool hasUpdate = latestVersion > CurrentVersion;
-                        
-                        string logEntry = string.Format("[{0}] Check: Local={1}, Remote={2}, HasUpdate={3}, URL={4}\n", 
-                            DateTime.Now, CurrentVersion, latestVersion, hasUpdate, downloadUrl);
-                        File.AppendAllText(logPath, logEntry);
-
                         return new UpdateResult { hasUpdate = hasUpdate, latestVersion = versionString, downloadUrl = downloadUrl };
                     }
-                    return new UpdateResult { hasUpdate = false };
                 }
+                return new UpdateResult { hasUpdate = false };
             }
             catch (Exception ex)
             {
@@ -105,14 +102,6 @@ namespace FaceID
         {
             UpdateForm updateForm = new UpdateForm(latestVersion, downloadUrl);
             updateForm.ShowDialog();
-        }
-
-        public static void ShowManualUpdateDialog(string latestVersion, string downloadUrl)
-        {
-            if (isShowingUpdateDialog) return;
-            isShowingUpdateDialog = true;
-            try { ShowAutoUpdateDialog(latestVersion, downloadUrl); }
-            finally { isShowingUpdateDialog = false; }
         }
     }
 

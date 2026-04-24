@@ -3,9 +3,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Net;
-using System.Net.Http;
-using System.Threading;
-using System.Threading.Tasks;
+using System.ComponentModel;
 using System.Windows.Forms;
 
 namespace FaceID
@@ -13,14 +11,11 @@ namespace FaceID
     public partial class UpdateForm : Form
     {
         private string downloadUrl;
-        private HttpClient httpClient;
-        private CancellationTokenSource cancellationTokenSource;
+        private WebClient webClient;
         private long totalBytes = 0;
         private long downloadedBytes = 0;
-        private const int BUFFER_SIZE = 65536;
+        private int retryCount = 0;
         private const int MAX_RETRIES = 5;
-        private DateTime lastUpdateTime = DateTime.Now;
-        private long lastDownloadedBytes = 0;
 
         public UpdateForm(string newVersion, string downloadUrl)
         {
@@ -33,24 +28,6 @@ namespace FaceID
             this.StartPosition = FormStartPosition.CenterScreen;
             this.Width = 520;
             this.Height = 300;
-
-            var handler = new HttpClientHandler
-            {
-                AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
-                AllowAutoRedirect = true,
-                MaxConnectionsPerServer = 10,
-                UseCookies = false
-            };
-            
-            httpClient = new HttpClient(handler)
-            {
-                Timeout = TimeSpan.FromMinutes(30)
-            };
-            
-            httpClient.DefaultRequestHeaders.Add("User-Agent", "FaceID-Updater/5.0");
-            httpClient.DefaultRequestHeaders.ConnectionClose = false;
-            
-            cancellationTokenSource = new CancellationTokenSource();
 
             SetupControls(newVersion);
             try { Theme.ApplyEcommerceTheme(this); } catch { }
@@ -71,16 +48,6 @@ namespace FaceID
             versionLabel.Location = new Point(20, 55);
             versionLabel.Size = new Size(440, 25);
             this.Controls.Add(versionLabel);
-
-            Label currentVersionLabel = new Label();
-            var assembly = System.Reflection.Assembly.GetExecutingAssembly();
-            var version = assembly.GetName().Version;
-            currentVersionLabel.Text = string.Format("Phiên bản hiện tại: {0}.{1}.{2}.{3}", 
-                version.Major, version.Minor, version.Build, version.Revision);
-            currentVersionLabel.Font = new Font("Segoe UI", 10);
-            currentVersionLabel.Location = new Point(20, 80);
-            currentVersionLabel.Size = new Size(440, 25);
-            this.Controls.Add(currentVersionLabel);
 
             ProgressBar progressBar = new ProgressBar();
             progressBar.Name = "progressBar";
@@ -103,7 +70,7 @@ namespace FaceID
             downloadBtn.Text = "Update";
             downloadBtn.Location = new Point(140, 200);
             downloadBtn.Size = new Size(120, 35);
-            downloadBtn.BackColor = Color.FromArgb(0, 120, 215);
+            downloadBtn.BackColor = Color.FromArgb(0, 191, 165);
             downloadBtn.ForeColor = Color.White;
             downloadBtn.Font = new Font("Segoe UI", 10, FontStyle.Bold);
             downloadBtn.Click += DownloadBtn_Click;
@@ -118,159 +85,94 @@ namespace FaceID
             this.Controls.Add(cancelBtn);
         }
 
-        private async void DownloadBtn_Click(object sender, EventArgs e)
+        private void DownloadBtn_Click(object sender, EventArgs e)
         {
             Button downloadBtn = (Button)sender;
             downloadBtn.Enabled = false;
 
+            StartDownload();
+        }
+
+        private void StartDownload()
+        {
             try
             {
                 Label statusLabel = (Label)this.Controls["statusLabel"];
-                statusLabel.Text = "Đang tải phiên bản mới...";
-                this.Refresh();
+                statusLabel.Text = "Đang kết nối...";
 
                 string tempPath = Path.Combine(Path.GetTempPath(), "FaceIDUpdate");
-                if (!Directory.Exists(tempPath))
-                    Directory.CreateDirectory(tempPath);
+                if (!Directory.Exists(tempPath)) Directory.CreateDirectory(tempPath);
 
                 string newExePath = Path.Combine(tempPath, "FaceID_Security_NEW.exe");
-                await DownloadFileAsync(downloadUrl, newExePath);
 
-                if (File.Exists(newExePath))
+                webClient = new WebClient();
+                webClient.Headers.Add("User-Agent", "FaceID-Updater/5.0");
+                ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072; // TLS 1.2
+
+                webClient.DownloadProgressChanged += (s, ev) =>
                 {
-                    statusLabel.Text = "Tải xong! Đang cập nhật ẩn...";
-                    this.Refresh();
-                    await Task.Delay(500);
+                    ProgressBar pb = (ProgressBar)this.Controls["progressBar"];
+                    Label sl = (Label)this.Controls["statusLabel"];
+                    pb.Value = ev.ProgressPercentage;
+                    sl.Text = string.Format("Đang tải: {0}% ({1:F2}MB / {2:F2}MB)", 
+                        ev.ProgressPercentage, ev.BytesReceived / 1048576.0, ev.TotalBytesToReceive / 1048576.0);
+                };
 
-                    string originalExePath = Process.GetCurrentProcess().MainModule.FileName;
-                    string escapedNewPath = newExePath.Replace("'", "''");
-                    string escapedOriginalPath = originalExePath.Replace("'", "''");
-
-                    string psCommand = string.Format("Start-Sleep -s 2; $success = $false; for ($i=1; $i -le 15; $i++) {{ try {{ Copy-Item -Path '{0}' -Destination '{1}' -Force -ErrorAction Stop; $success = $true; break; }} catch {{ Start-Sleep -s 1; }} }}; if ($success) {{ Start-Process -FilePath '{1}'; }}; Remove-Item -Path '{0}';", 
-                        escapedNewPath, escapedOriginalPath);
-
-                    Process.Start(new ProcessStartInfo
+                webClient.DownloadFileCompleted += (s, ev) =>
+                {
+                    if (ev.Error != null && retryCount < MAX_RETRIES)
                     {
-                        FileName = "powershell.exe",
-                        Arguments = string.Format("-NoProfile -WindowStyle Hidden -Command \"{0}\"", psCommand),
-                        UseShellExecute = true,
-                        Verb = "runas"
-                    });
-                    
-                    Application.Exit();
-                    Environment.Exit(0);
-                }
+                        retryCount++;
+                        Label sl = (Label)this.Controls["statusLabel"];
+                        sl.Text = string.Format("Lỗi kết nối. Thử lại lần {0}...", retryCount);
+                        StartDownload();
+                        return;
+                    }
+
+                    if (ev.Cancelled) return;
+                    if (ev.Error != null)
+                    {
+                        MessageBox.Show("Lỗi: " + ev.Error.Message);
+                        this.Controls["downloadBtn"].Enabled = true;
+                        return;
+                    }
+
+                    InstallUpdate(newExePath);
+                };
+
+                webClient.DownloadFileAsync(new Uri(downloadUrl), newExePath);
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Lỗi: " + ex.Message, "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                downloadBtn.Enabled = true;
+                MessageBox.Show("Lỗi: " + ex.Message);
             }
         }
 
-        private async Task DownloadFileAsync(string url, string filePath)
+        private void InstallUpdate(string newExePath)
         {
-            int retryCount = 0;
-            Exception lastException = null;
+            string originalExePath = Process.GetCurrentProcess().MainModule.FileName;
+            string escapedNewPath = newExePath.Replace("'", "''");
+            string escapedOriginalPath = originalExePath.Replace("'", "''");
 
-            while (retryCount < MAX_RETRIES)
+            string psCommand = string.Format("Start-Sleep -s 2; $success = $false; for ($i=1; $i -le 15; $i++) {{ try {{ Copy-Item -Path '{0}' -Destination '{1}' -Force -ErrorAction Stop; $success = $true; break; }} catch {{ Start-Sleep -s 1; }} }}; if ($success) {{ Start-Process -FilePath '{1}'; }}; Remove-Item -Path '{0}';", 
+                escapedNewPath, escapedOriginalPath);
+
+            Process.Start(new ProcessStartInfo
             {
-                try
-                {
-                    await DownloadFileWithProgressAsync(url, filePath);
-                    return;
-                }
-                catch (Exception ex)
-                {
-                    lastException = ex;
-                    retryCount++;
-                    
-                    this.Invoke((MethodInvoker)(() =>
-                    {
-                        Label statusLabel = (Label)this.Controls["statusLabel"];
-                        statusLabel.Text = string.Format("Kết nối bị gián đoạn. Đang thử lại ({0}/{1})...", retryCount, MAX_RETRIES);
-                    }));
-                    
-                    await Task.Delay(1000 * retryCount);
-                }
-            }
-            throw lastException ?? new Exception("Download failed");
-        }
-
-        private async Task DownloadFileWithProgressAsync(string url, string filePath)
-        {
-            using (var response = await httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationTokenSource.Token))
-            {
-                response.EnsureSuccessStatusCode();
-                totalBytes = response.Content.Headers.ContentLength ?? -1L;
-
-                using (var contentStream = await response.Content.ReadAsStreamAsync())
-                using (var fileStream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None, BUFFER_SIZE, useAsync: true))
-                {
-                    downloadedBytes = 0;
-                    byte[] buffer = new byte[BUFFER_SIZE];
-                    int bytesRead;
-                    int uiUpdateCounter = 0;
-
-                    while ((bytesRead = await contentStream.ReadAsync(buffer, 0, buffer.Length, cancellationTokenSource.Token)) != 0)
-                    {
-                        await fileStream.WriteAsync(buffer, 0, bytesRead, cancellationTokenSource.Token);
-                        downloadedBytes += bytesRead;
-                        uiUpdateCounter++;
-
-                        if (uiUpdateCounter >= 10)
-                        {
-                            uiUpdateCounter = 0;
-                            UpdateDownloadProgress();
-                        }
-                    }
-                    UpdateDownloadProgress();
-                }
-            }
-        }
-
-        private void UpdateDownloadProgress()
-        {
-            if (totalBytes <= 0) return;
-            int percentage = (int)((downloadedBytes * 100) / totalBytes);
+                FileName = "powershell.exe",
+                Arguments = string.Format("-NoProfile -WindowStyle Hidden -Command \"{0}\"", psCommand),
+                UseShellExecute = true,
+                Verb = "runas"
+            });
             
-            DateTime now = DateTime.Now;
-            double elapsedSeconds = (now - lastUpdateTime).TotalSeconds;
-            double speed = 0;
-            
-            if (elapsedSeconds > 0)
-            {
-                speed = (downloadedBytes - lastDownloadedBytes) / elapsedSeconds / (1024 * 1024);
-                lastUpdateTime = now;
-                lastDownloadedBytes = downloadedBytes;
-            }
-
-            this.Invoke((MethodInvoker)(() =>
-            {
-                ProgressBar progressBar = (ProgressBar)this.Controls["progressBar"];
-                Label statusLabel = (Label)this.Controls["statusLabel"];
-
-                progressBar.Value = Math.Min(percentage, 100);
-                
-                double downloadedMB = downloadedBytes / (1024.0 * 1024.0);
-                double totalMB = totalBytes / (1024.0 * 1024.0);
-                
-                statusLabel.Text = string.Format("Đang tải: {0:F2}MB / {1:F2}MB ({2}%) - {3:F2} MB/s", 
-                    downloadedMB, totalMB, percentage, speed);
-            }));
+            Application.Exit();
+            Environment.Exit(0);
         }
 
         private void CancelBtn_Click(object sender, EventArgs e)
         {
-            cancellationTokenSource.Cancel();
+            if (webClient != null) webClient.CancelAsync();
             this.Close();
-        }
-
-        protected override void OnFormClosing(FormClosingEventArgs e)
-        {
-            httpClient?.Dispose();
-            cancellationTokenSource?.Dispose();
-            base.OnFormClosing(e);
         }
 
         private void InitializeComponent()
@@ -294,8 +196,7 @@ namespace FaceID
                 if (ctrl is Button)
                 {
                     Button btn = (Button)ctrl;
-                    if (btn.Name == "downloadBtn") btn.BackColor = Color.FromArgb(0, 191, 165);
-                    else btn.BackColor = Color.FromArgb(45, 45, 45);
+                    btn.BackColor = btn.Name == "downloadBtn" ? Color.FromArgb(0, 191, 165) : Color.FromArgb(45, 45, 45);
                     btn.ForeColor = Color.White;
                     btn.FlatStyle = FlatStyle.Flat;
                     btn.FlatAppearance.BorderSize = 0;
