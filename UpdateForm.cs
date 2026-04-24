@@ -5,6 +5,7 @@ using System.IO;
 using System.Net;
 using System.ComponentModel;
 using System.Windows.Forms;
+using System.Drawing.Drawing2D;
 
 namespace FaceID
 {
@@ -15,80 +16,139 @@ namespace FaceID
         private UpdateParams updateParams;
         private int retryCount = 0;
         private const int MAX_RETRIES = 5;
+        
+        // Colors
+        private Color BackColorMain = Color.FromArgb(11, 14, 20);
+        private Color AccentColor = Color.FromArgb(0, 210, 255);
+        private Color TextColorMain = Color.FromArgb(240, 240, 240);
+        private Color TextColorMuted = Color.FromArgb(150, 150, 150);
 
         public UpdateForm(string newVersion, string downloadUrl, UpdateParams p)
         {
             InitializeComponent();
             this.downloadUrl = downloadUrl;
             this.updateParams = p;
-            this.Text = "FaceID Security - Update";
-            this.FormBorderStyle = FormBorderStyle.FixedDialog;
-            this.MaximizeBox = false;
-            this.MinimizeBox = false;
+            this.Text = "FaceID Security - Cập nhật hệ thống";
+            this.FormBorderStyle = FormBorderStyle.None; // Bỏ viền mặc định
             this.StartPosition = FormStartPosition.CenterScreen;
-            this.Width = 520;
-            this.Height = 300;
+            this.Width = 550;
+            this.Height = 320;
+            this.BackColor = BackColorMain;
 
             SetupControls(newVersion);
-            try { Theme.ApplyEcommerceTheme(this); } catch { }
+            
+            // Bo góc form (Windows API)
+            try { Region = Region.FromHrgn(CreateRoundRectRgn(0, 0, Width, Height, 15, 15)); } catch { }
         }
+
+        [System.Runtime.InteropServices.DllImport("Gdi32.dll", EntryPoint = "CreateRoundRectRgn")]
+        private static extern IntPtr CreateRoundRectRgn(int nLeftRect, int nTopRect, int nRightRect, int nBottomRect, int nWidthEllipse, int nHeightEllipse);
 
         private void SetupControls(string newVersion)
         {
+            // Panel Viền Neon
+            Panel borderPanel = new Panel();
+            borderPanel.Dock = DockStyle.Fill;
+            borderPanel.Padding = new Padding(2);
+            borderPanel.Paint += (s, e) => {
+                e.Graphics.DrawRectangle(new Pen(AccentColor, 2), 0, 0, borderPanel.Width - 1, borderPanel.Height - 1);
+            };
+            this.Controls.Add(borderPanel);
+
+            // Title Label
             Label titleLabel = new Label();
-            titleLabel.Text = "Phiên bản mới có sẵn!";
-            titleLabel.Font = new Font("Segoe UI", 14, FontStyle.Bold);
-            titleLabel.Location = new Point(20, 20);
-            titleLabel.Size = new Size(440, 30);
-            this.Controls.Add(titleLabel);
+            titleLabel.Text = "CẬP NHẬT HỆ THỐNG";
+            titleLabel.Font = new Font("Segoe UI", 16, FontStyle.Bold);
+            titleLabel.ForeColor = AccentColor;
+            titleLabel.Location = new Point(30, 30);
+            titleLabel.AutoSize = true;
+            borderPanel.Controls.Add(titleLabel);
 
-            Label versionLabel = new Label();
-            versionLabel.Text = "Phiên bản mới: " + newVersion;
-            versionLabel.Font = new Font("Segoe UI", 10);
-            versionLabel.Location = new Point(20, 55);
-            versionLabel.Size = new Size(440, 25);
-            this.Controls.Add(versionLabel);
+            // Subtitle
+            Label subTitle = new Label();
+            subTitle.Text = "Phát hiện phiên bản mới: v" + newVersion;
+            subTitle.Font = new Font("Segoe UI", 10);
+            subTitle.ForeColor = TextColorMain;
+            subTitle.Location = new Point(32, 65);
+            subTitle.AutoSize = true;
+            borderPanel.Controls.Add(subTitle);
 
-            ProgressBar progressBar = new ProgressBar();
-            progressBar.Name = "progressBar";
-            progressBar.Location = new Point(20, 120);
-            progressBar.Size = new Size(440, 30);
-            progressBar.Style = ProgressBarStyle.Continuous;
-            this.Controls.Add(progressBar);
+            // Current Version
+            Label currentVer = new Label();
+            currentVer.Text = "Phiên bản hiện tại: v" + updateParams.CurrentVersion;
+            currentVer.Font = new Font("Segoe UI", 9);
+            currentVer.ForeColor = TextColorMuted;
+            currentVer.Location = new Point(32, 88);
+            currentVer.AutoSize = true;
+            borderPanel.Controls.Add(currentVer);
 
+            // Progress Bar (Custom)
+            ProgressBar pb = new ProgressBar();
+            pb.Name = "progressBar";
+            pb.Location = new Point(30, 140);
+            pb.Size = new Size(490, 12);
+            pb.Style = ProgressBarStyle.Continuous;
+            borderPanel.Controls.Add(pb);
+
+            // Status Label
             Label statusLabel = new Label();
             statusLabel.Name = "statusLabel";
-            statusLabel.Text = "Sẵn sàng để tải...";
+            statusLabel.Text = "Sẵn sàng để tối ưu hóa hệ thống...";
             statusLabel.Font = new Font("Segoe UI", 9);
-            statusLabel.Location = new Point(20, 155);
-            statusLabel.Size = new Size(440, 20);
-            statusLabel.ForeColor = Color.Gray;
-            this.Controls.Add(statusLabel);
+            statusLabel.ForeColor = TextColorMuted;
+            statusLabel.Location = new Point(30, 160);
+            statusLabel.Size = new Size(490, 20);
+            borderPanel.Controls.Add(statusLabel);
 
+            // Download Button
             Button downloadBtn = new Button();
             downloadBtn.Name = "downloadBtn";
-            downloadBtn.Text = "Update";
-            downloadBtn.Location = new Point(140, 200);
-            downloadBtn.Size = new Size(120, 35);
-            downloadBtn.BackColor = Color.FromArgb(0, 191, 165);
-            downloadBtn.ForeColor = Color.White;
+            downloadBtn.Text = "CẬP NHẬT NGAY";
+            downloadBtn.Location = new Point(130, 230);
+            downloadBtn.Size = new Size(140, 45);
+            downloadBtn.FlatStyle = FlatStyle.Flat;
+            downloadBtn.FlatAppearance.BorderSize = 0;
+            downloadBtn.BackColor = AccentColor;
+            downloadBtn.ForeColor = Color.Black;
             downloadBtn.Font = new Font("Segoe UI", 10, FontStyle.Bold);
+            downloadBtn.Cursor = Cursors.Hand;
             downloadBtn.Click += DownloadBtn_Click;
-            this.Controls.Add(downloadBtn);
+            borderPanel.Controls.Add(downloadBtn);
 
+            // Cancel Button
             Button cancelBtn = new Button();
-            cancelBtn.Text = "Hủy";
-            cancelBtn.Location = new Point(280, 200);
-            cancelBtn.Size = new Size(120, 35);
-            cancelBtn.Font = new Font("Segoe UI", 10);
+            cancelBtn.Text = "ĐỂ SAU";
+            cancelBtn.Location = new Point(290, 230);
+            cancelBtn.Size = new Size(130, 45);
+            cancelBtn.FlatStyle = FlatStyle.Flat;
+            cancelBtn.FlatAppearance.BorderSize = 1;
+            cancelBtn.FlatAppearance.BorderColor = Color.FromArgb(60, 60, 60);
+            cancelBtn.BackColor = Color.Transparent;
+            cancelBtn.ForeColor = TextColorMuted;
+            cancelBtn.Font = new Font("Segoe UI", 10, FontStyle.Bold);
+            cancelBtn.Cursor = Cursors.Hand;
             cancelBtn.Click += CancelBtn_Click;
-            this.Controls.Add(cancelBtn);
+            borderPanel.Controls.Add(cancelBtn);
+            
+            // Close X
+            Label closeBtn = new Label();
+            closeBtn.Text = "✕";
+            closeBtn.Font = new Font("Arial", 12, FontStyle.Bold);
+            closeBtn.ForeColor = Color.Gray;
+            closeBtn.Location = new Point(515, 15);
+            closeBtn.Size = new Size(20, 20);
+            closeBtn.Cursor = Cursors.Hand;
+            closeBtn.Click += (s, e) => this.Close();
+            borderPanel.Controls.Add(closeBtn);
         }
 
         private void DownloadBtn_Click(object sender, EventArgs e)
         {
             Button downloadBtn = (Button)sender;
             downloadBtn.Enabled = false;
+            downloadBtn.Text = "ĐANG TẢI...";
+            downloadBtn.BackColor = Color.FromArgb(40, 40, 40);
+            downloadBtn.ForeColor = Color.Gray;
             StartDownload();
         }
 
@@ -96,12 +156,11 @@ namespace FaceID
         {
             try
             {
-                Label statusLabel = (Label)this.Controls["statusLabel"];
-                statusLabel.Text = "Đang kết nối...";
+                Label statusLabel = (Label)this.Controls.Find("statusLabel", true)[0];
+                statusLabel.Text = "Đang kết nối tới máy chủ bảo mật...";
 
                 string tempPath = Path.Combine(Path.GetTempPath(), "FaceIDUpdate");
                 if (!Directory.Exists(tempPath)) Directory.CreateDirectory(tempPath);
-
                 string newExePath = Path.Combine(tempPath, "FaceID_Security_NEW.exe");
 
                 webClient = new WebClient();
@@ -110,10 +169,10 @@ namespace FaceID
 
                 webClient.DownloadProgressChanged += (s, ev) =>
                 {
-                    ProgressBar pb = (ProgressBar)this.Controls["progressBar"];
-                    Label sl = (Label)this.Controls["statusLabel"];
+                    ProgressBar pb = (ProgressBar)this.Controls.Find("progressBar", true)[0];
+                    Label sl = (Label)this.Controls.Find("statusLabel", true)[0];
                     pb.Value = ev.ProgressPercentage;
-                    sl.Text = string.Format("Đang tải: {0}% ({1:F2}MB / {2:F2}MB)", 
+                    sl.Text = string.Format("Tiến trình: {0}% - Đã tải {1:F1} MB / {2:F1} MB", 
                         ev.ProgressPercentage, ev.BytesReceived / 1048576.0, ev.TotalBytesToReceive / 1048576.0);
                 };
 
@@ -125,18 +184,15 @@ namespace FaceID
                         StartDownload();
                         return;
                     }
-
                     if (ev.Cancelled) return;
                     if (ev.Error != null)
                     {
-                        MessageBox.Show("Lỗi: " + ev.Error.Message);
-                        this.Controls["downloadBtn"].Enabled = true;
+                        MessageBox.Show("Lỗi kết nối: " + ev.Error.Message);
+                        this.Controls.Find("downloadBtn", true)[0].Enabled = true;
                         return;
                     }
-
                     InstallUpdate(newExePath);
                 };
-
                 webClient.DownloadFileAsync(new Uri(downloadUrl), newExePath);
             }
             catch (Exception ex)
@@ -147,14 +203,16 @@ namespace FaceID
 
         private void InstallUpdate(string newExePath)
         {
-            // Bước 1: Tạo cờ hiệu thoát an toàn (Safe Exit)
+            Label sl = (Label)this.Controls.Find("statusLabel", true)[0];
+            sl.Text = "Đang khởi động tiến trình ghi đè bảo mật...";
+            sl.ForeColor = AccentColor;
+
             try 
             {
                 string flagFile = Path.Combine(updateParams.UserDataPath, "FaceID_Safe_Exit.flag");
                 File.WriteAllText(flagFile, "SAFE_EXIT_FOR_UPDATE");
             } catch {}
 
-            // Bước 2: KẾT LIỄU TIẾN TRÌNH FACEID CŨ (Để tray biến mất hoàn toàn)
             try
             {
                 if (updateParams.ParentPid > 0)
@@ -165,7 +223,6 @@ namespace FaceID
                 }
             } catch {}
 
-            // Bước 3: Chạy script PowerShell để thay thế file
             string originalExePath = updateParams.ExePath;
             string escapedNewPath = newExePath.Replace("'", "''");
             string escapedOriginalPath = originalExePath.Replace("'", "''");
@@ -198,31 +255,6 @@ namespace FaceID
             this.ClientSize = new Size(500, 250);
             this.Name = "UpdateForm";
             this.Font = new Font("Segoe UI", 9F);
-        }
-    }
-
-    public static class Theme
-    {
-        public static void ApplyEcommerceTheme(Form form)
-        {
-            form.BackColor = Color.FromArgb(18, 18, 18);
-            foreach (Control ctrl in form.Controls)
-            {
-                if (ctrl is Label) ctrl.ForeColor = Color.FromArgb(230, 230, 230);
-                if (ctrl is Button)
-                {
-                    Button btn = (Button)ctrl;
-                    btn.BackColor = btn.Name == "downloadBtn" ? Color.FromArgb(0, 191, 165) : Color.FromArgb(45, 45, 45);
-                    btn.ForeColor = Color.White;
-                    btn.FlatStyle = FlatStyle.Flat;
-                    btn.FlatAppearance.BorderSize = 0;
-                }
-                if (ctrl is ProgressBar)
-                {
-                    ctrl.BackColor = Color.FromArgb(45, 45, 45);
-                    ctrl.ForeColor = Color.FromArgb(0, 191, 165);
-                }
-            }
         }
     }
 }
