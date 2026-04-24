@@ -215,6 +215,36 @@ function compileKeyGuard() {
     }
 }
 
+function compileUpdater() {
+    if (process.platform !== 'win32') return;
+    const tempPath = app.getPath('userData');
+    const exePath = path.join(tempPath, 'FaceID_Updater.exe'); 
+    
+    const cscPath = 'C:\\\\Windows\\\\Microsoft.NET\\\\Framework64\\\\v4.0.30319\\\\csc.exe';
+    if (fs.existsSync(cscPath)) {
+        // Biên dịch cả 2 file .cs thành 1 EXE
+        const checkerPath = path.join(__dirname, 'UpdateChecker.cs');
+        const formPath = path.join(__dirname, 'UpdateForm.cs');
+        
+        if (fs.existsSync(checkerPath) && fs.existsSync(formPath)) {
+            const compile = spawn(cscPath, [
+                '/target:winexe', 
+                `/out:${exePath}`, 
+                '/reference:System.Windows.Forms.dll',
+                '/reference:System.Drawing.dll',
+                '/reference:System.Net.Http.dll',
+                checkerPath, 
+                formPath
+            ], { shell: true });
+            
+            compile.on('close', (code) => {
+                if (code === 0) logToFile("FaceID Updater Compiled Successfully.");
+                else logToFile("FaceID Updater Compilation Failed with code: " + code);
+            });
+        }
+    }
+}
+
 function manageKeyGuard(enable) {
     if (process.platform !== 'win32') return;
     const exePath = path.join(app.getPath('userData'), 'WinSecurityHealthGuard.exe');
@@ -656,6 +686,7 @@ app.whenReady().then(() => {
     }
 
     compileKeyGuard();
+    compileUpdater();
     createWindow();
     createTray();
     initPython(); 
@@ -842,58 +873,18 @@ function showSystemToast(title, body) {
 }
 
 function checkAndDownloadUpdate() {
-    const options = {
-        hostname: 'api.github.com',
-        path: '/repos/HuyTran1002/FaceID/releases/latest',
-        method: 'GET',
-        headers: { 'User-Agent': 'FaceID-AutoUpdater' },
-        timeout: 20000, // Tăng lên 20s cho mạng yếu
-        rejectUnauthorized: false
-    };
-
-    const request = https.get(options, (res) => {
-        let data = '';
-        res.on('data', chunk => { data += chunk; });
-        res.on('end', () => {
-            if (res.statusCode !== 200) {
-                if (mainWindow) mainWindow.webContents.send('update-error', `GitHub trả về lỗi ${res.statusCode}.`);
-                return;
-            }
-            try {
-                const release = JSON.parse(data);
-                const latestVersion = release.tag_name.replace('v', '');
-                
-                if (isNewerVersion(latestVersion, packageJson.version)) {
-                    const exeAsset = release.assets.find(a => a.name.endsWith('.exe'));
-                    if (exeAsset) {
-                        if (mainWindow) {
-                            mainWindow.show();
-                            mainWindow.webContents.send('update-available', {
-                                version: latestVersion,
-                                downloadUrl: exeAsset.browser_download_url,
-                                releaseNotes: release.body || "Bản cập nhật mới giúp tăng cường bảo mật."
-                            });
-                        }
-                    } else {
-                        showSystemToast("Lỗi cập nhật", "Không tìm thấy file EXE trong bản phát hành mới.");
-                    }
-                } else {
-                    showStyledPopup('Kiểm tra cập nhật', "Bạn đang sử dụng phiên bản mới nhất (v" + packageJson.version + ").");
-                }
-            } catch (e) {
-                showSystemToast("Lỗi cập nhật", "Dữ liệu trả về từ GitHub không hợp lệ.");
-            }
-        });
-    });
-
-    request.on('error', (e) => {
-        showStyledPopup("Lỗi kết nối", "Không thể kiểm tra cập nhật. Lỗi: " + e.message);
-    });
-
-    request.on('timeout', () => {
-        request.destroy();
-        showStyledPopup("Lỗi cập nhật", "Hết thời gian chờ kết nối (20s). Mạng quá yếu.");
-    });
+    const updaterExe = path.join(app.getPath('userData'), 'FaceID_Updater.exe');
+    if (fs.existsSync(updaterExe)) {
+        logToFile("Starting C# Updater sidecar...");
+        spawn(updaterExe, [], {
+            detached: true,
+            stdio: 'ignore',
+            windowsHide: false // Hiện cửa sổ để user thấy tiến trình
+        }).unref();
+    } else {
+        showStyledPopup("Lỗi hệ thống", "Trình cập nhật chưa sẵn sàng. Vui lòng thử lại sau vài giây.");
+        compileUpdater(); // Thử biên dịch lại
+    }
 }
 
 /**

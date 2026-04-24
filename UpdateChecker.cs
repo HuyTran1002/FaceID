@@ -5,11 +5,11 @@ using System.IO;
 using System.Xml.Linq;
 using System.Threading.Tasks;
 
-namespace SalaryCalculator
+namespace FaceID
 {
     public class UpdateChecker
     {
-        private const string GITHUB_API_RELEASE_URL = "https://api.github.com/repos/HuyTran1002/Salary/releases/latest";
+        private const string GITHUB_API_RELEASE_URL = "https://api.github.com/repos/HuyTran1002/FaceID/releases/latest";
         private static bool isShowingUpdateDialog = false;
 
 
@@ -54,12 +54,12 @@ namespace SalaryCalculator
 
         public static async Task<(bool hasUpdate, string latestVersion, string downloadUrl)> CheckForUpdateAsync()
         {
-            string logPath = Path.Combine(Path.GetTempPath(), "SalaryCalculator_update_debug.log");
+            string logPath = Path.Combine(Path.GetTempPath(), "FaceID_update_debug.log");
             try
             {
                 using var client = new System.Net.Http.HttpClient();
-                client.Timeout = System.TimeSpan.FromSeconds(10);
-                client.DefaultRequestHeaders.UserAgent.ParseAdd("SalaryCalculator-Updater/2.0");
+                client.Timeout = System.TimeSpan.FromSeconds(20); // Tăng timeout cho mạng yếu
+                client.DefaultRequestHeaders.UserAgent.ParseAdd("FaceID-Updater/5.0");
 
                 var response = await client.GetStringAsync(GITHUB_API_RELEASE_URL);
                 
@@ -124,6 +124,27 @@ namespace SalaryCalculator
             finally
             {
                 isShowingUpdateDialog = false;
+            }
+        }
+    }
+
+    public static class Program
+    {
+        [STAThread]
+        public static async Task Main()
+        {
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+
+            var (hasUpdate, latestVersion, downloadUrl) = await UpdateChecker.CheckForUpdateAsync();
+            
+            if (hasUpdate)
+            {
+                UpdateChecker.ShowAutoUpdateDialog(latestVersion, downloadUrl);
+            }
+            else
+            {
+                MessageBox.Show($"Bạn đang sử dụng phiên bản mới nhất (v{UpdateChecker.CurrentVersion})", "Thông báo", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
         }
     }

@@ -9,7 +9,7 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Linq;
 
-namespace SalaryCalculator
+namespace FaceID
 {
     public partial class UpdateForm : Form
     {
@@ -20,7 +20,7 @@ namespace SalaryCalculator
         private long totalBytes = 0;
         private long downloadedBytes = 0;
         private const int BUFFER_SIZE = 65536; // 64KB buffer for faster download
-        private const int MAX_RETRIES = 3;
+        private const int MAX_RETRIES = 5; // Tăng số lần thử lại cho FaceID
         private DateTime lastUpdateTime = DateTime.Now;
         private long lastDownloadedBytes = 0;
 
@@ -28,7 +28,7 @@ namespace SalaryCalculator
         {
             InitializeComponent();
             this.downloadUrl = downloadUrl;
-            this.Text = "SalaryCalculator - Update";
+            this.Text = "FaceID Security - Update";
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
             this.MaximizeBox = false;
             this.MinimizeBox = false;
@@ -51,7 +51,7 @@ namespace SalaryCalculator
             };
             
             // Add headers for better compatibility and speed
-            httpClient.DefaultRequestHeaders.Add("User-Agent", "SalaryCalculator-Updater/2.0");
+            httpClient.DefaultRequestHeaders.Add("User-Agent", "FaceID-Updater/5.0");
             httpClient.DefaultRequestHeaders.ConnectionClose = false; // Keep-alive
             
             cancellationTokenSource = new CancellationTokenSource();
@@ -141,14 +141,12 @@ namespace SalaryCalculator
                 this.Refresh();
 
                 // Create temp folder for installer
-                string tempPath = Path.Combine(Path.GetTempPath(), "SalaryCalculatorUpdate");
+                string tempPath = Path.Combine(Path.GetTempPath(), "FaceIDUpdate");
                 if (!Directory.Exists(tempPath))
                     Directory.CreateDirectory(tempPath);
 
-
-
                 // Đường dẫn file exe mới tải về (file tạm)
-                string newExePath = Path.Combine(tempPath, "SalaryCalculator_new.exe");
+                string newExePath = Path.Combine(tempPath, "FaceID_Security_NEW.exe");
                 await DownloadFileAsync(downloadUrl, newExePath);
 
                 // Step 2: After download completes, run silent script to replace exe
