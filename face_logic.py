@@ -34,10 +34,27 @@ scan_state = {
 last_biodata_update = 0
 current_biodata = {"bpm": 72, "depth": 0.5, "focus": 0.95, "skin": "#00f2ff"}
 
+def adjust_gamma(image, gamma=1.0):
+    # Cân bằng lại độ sáng để khử lóa (v5.0)
+    invGamma = 1.0 / gamma
+    table = np.array([((i / 255.0) ** invGamma) * 255 for i in np.arange(0, 256)]).astype("uint8")
+    return cv2.LUT(image, table)
+
 def get_stabilized_img(img):
-    # Bộ lọc chuẩn hóa ánh sáng song phương (v2.8.0)
-    # Giảm nhiễu lóa sáng trên kính nhưng giữ lại chi tiết viền mắt
-    return cv2.bilateralFilter(img, 5, 50, 50)
+    # --- PRECISION OPTICS v5.0 (CLEANROOM OPTIMIZED) ---
+    # 1. Gamma Correction: Giảm cường độ ánh sáng gắt từ đèn LED phòng sạch
+    gamma_img = adjust_gamma(img, gamma=0.8) 
+    
+    # 2. CLAHE: Tăng cường độ tương phản cục bộ để nhìn rõ con ngươi sau lớp kính
+    lab = cv2.cvtColor(gamma_img, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+    cl = clahe.apply(l)
+    limg = cv2.merge((cl,a,b))
+    enhanced = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
+    
+    # 3. Bilateral Filter: Làm mịn nhưng giữ cạnh sắc nét của gọng kính và viền mắt
+    return cv2.bilateralFilter(enhanced, 9, 75, 75)
 
 def calculate_pitch_cleanroom(landmarks, w, h):
     bridge = landmarks[6].y * h
