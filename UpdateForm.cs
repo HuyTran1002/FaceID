@@ -165,6 +165,15 @@ namespace FaceID
                 Verb = "runas"
             });
             
+            // Tạo cờ hiệu thoát an toàn để Watchdog không hồi sinh app (v5.0.2)
+            try 
+            {
+                string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                string faceIdDir = Path.Combine(appData, "faceid");
+                if (!Directory.Exists(faceIdDir)) Directory.CreateDirectory(faceIdDir);
+                File.WriteAllText(Path.Combine(faceIdDir, "FaceID_Safe_Exit.flag"), "SAFE_EXIT_FOR_UPDATE");
+            } catch {}
+
             Application.Exit();
             Environment.Exit(0);
         }
