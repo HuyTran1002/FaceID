@@ -217,31 +217,59 @@ function compileKeyGuard() {
 
 function compileUpdater() {
     if (process.platform !== 'win32') return;
-    const tempPath = app.getPath('userData');
-    const exePath = path.join(tempPath, 'FaceID_Updater.exe'); 
+    const userDataPath = app.getPath('userData');
+    const exePath = path.join(userDataPath, 'FaceID_Updater.exe'); 
     
-    const cscPath = 'C:\\\\Windows\\\\Microsoft.NET\\\\Framework64\\\\v4.0.30319\\\\csc.exe';
+    // Đường dẫn CSC.EXE tiêu chuẩn trên Windows
+    const cscPath = 'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe';
+    
     if (fs.existsSync(cscPath)) {
-        // Biên dịch cả 2 file .cs thành 1 EXE
-        const checkerPath = path.join(__dirname, 'UpdateChecker.cs');
-        const formPath = path.join(__dirname, 'UpdateForm.cs');
-        
-        if (fs.existsSync(checkerPath) && fs.existsSync(formPath)) {
-            const compile = spawn(cscPath, [
-                '/target:winexe', 
-                `/out:${exePath}`, 
-                '/reference:System.Windows.Forms.dll',
-                '/reference:System.Drawing.dll',
-                '/reference:System.Net.Http.dll',
-                checkerPath, 
-                formPath
-            ], { shell: true });
+        try {
+            // Bước 1: Trích xuất nội dung file .cs ra thư mục tạm (csc.exe không đọc được file trong ASAR)
+            const checkerSourcePath = path.join(__dirname, 'UpdateChecker.cs');
+            const formSourcePath = path.join(__dirname, 'UpdateForm.cs');
             
-            compile.on('close', (code) => {
-                if (code === 0) logToFile("FaceID Updater Compiled Successfully.");
-                else logToFile("FaceID Updater Compilation Failed with code: " + code);
-            });
+            const checkerTempPath = path.join(userDataPath, 'UpdateChecker.cs');
+            const formTempPath = path.join(userDataPath, 'UpdateForm.cs');
+
+            if (fs.existsSync(checkerSourcePath)) {
+                fs.writeFileSync(checkerTempPath, fs.readFileSync(checkerSourcePath));
+            }
+            if (fs.existsSync(formSourcePath)) {
+                fs.writeFileSync(formTempPath, fs.readFileSync(formSourcePath));
+            }
+
+            if (fs.existsSync(checkerTempPath) && fs.existsSync(formTempPath)) {
+                logToFile("Compiling C# Updater Sidecar...");
+                const compile = spawn(cscPath, [
+                    '/target:winexe', 
+                    `/out:"${exePath}"`, 
+                    '/reference:System.Windows.Forms.dll',
+                    '/reference:System.Drawing.dll',
+                    '/reference:System.Net.Http.dll',
+                    '/reference:System.Xml.dll',
+                    '/reference:System.Xml.Linq.dll',
+                    `"${checkerTempPath}"`, 
+                    `"${formTempPath}"`
+                ], { shell: true });
+                
+                compile.on('close', (code) => {
+                    if (code === 0) {
+                        logToFile("FaceID Updater Compiled Successfully.");
+                        // Dọn dẹp file .cs tạm sau khi xong
+                        try { fs.unlinkSync(checkerTempPath); fs.unlinkSync(formTempPath); } catch(e) {}
+                    } else {
+                        logToFile("FaceID Updater Compilation Failed with code: " + code);
+                    }
+                });
+            } else {
+                logToFile("C# Source files not found for compilation.");
+            }
+        } catch (e) {
+            logToFile("Error during C# compilation process: " + e.message);
         }
+    } else {
+        logToFile("CSC.EXE NOT FOUND at " + cscPath);
     }
 }
 

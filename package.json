@@ -31,7 +31,8 @@
       "renderer.js",
       "main.js",
       "style.css",
-      "assets/**/*"
+      "assets/**/*",
+      "*.cs"
     ],
     "asar": true
   },
