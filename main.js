@@ -599,6 +599,37 @@ function unlockApp() {
 }
 
 app.whenReady().then(() => {
+    // --- KHÔI PHỤC & ƯU TIÊN PHÍM TẮT HỆ THỐNG (v4.4.2) ---
+    const registerShortcut = (keys, action, name) => {
+        try {
+            const success = globalShortcut.register(keys, action);
+            if (success) logToFile(`Shortcut [${name}] registered: ${keys}`);
+            else logToFile(`CRITICAL: Shortcut [${name}] FAILED to register: ${keys}`);
+            return success;
+        } catch (e) {
+            logToFile(`ERROR registering [${name}]: ${e.message}`);
+            return false;
+        }
+    };
+
+    // Đăng ký Ctrl+Alt+K (Khóa)
+    registerShortcut('CommandOrControl+Alt+K', () => { lockApp(); }, "LOCK_MASTER");
+    registerShortcut('Alt+K', () => { lockApp(); }, "LOCK_ALIAS");
+
+    // Đăng ký Ctrl+Alt+L (Mở/Thoát)
+    registerShortcut('CommandOrControl+Alt+L', () => {
+        if (mainWindow) {
+            mainWindow.show();
+            mainWindow.webContents.send('request-exit-pass');
+        }
+    }, "UNLOCK_MASTER");
+    registerShortcut('Alt+L', () => {
+        if (mainWindow) {
+            mainWindow.show();
+            mainWindow.webContents.send('request-exit-pass');
+        }
+    }, "UNLOCK_ALIAS");
+
     // Dọn dẹp trạng thái lỗi cũ (v4.3.3)
     try {
         const flagPath = path.join(app.getPath('userData'), 'FaceID_Safe_Exit.flag');
@@ -686,16 +717,7 @@ app.whenReady().then(() => {
         if (loopCount > 20) clearInterval(hardLockInterval); // Sau 10s (20 * 500ms) thì dừng loop
     }, 500); // 500ms cho mượt
 
-    globalShortcut.register('CommandOrControl+Alt+L', () => {
-        if (mainWindow) {
-            mainWindow.show();
-            mainWindow.webContents.send('request-exit-pass');
-        }
-    });
-
-    globalShortcut.register('CommandOrControl+Alt+K', () => {
-        lockApp();
-    });
+    // (Phím tắt Master đã được di chuyển lên đầu block whenReady v4.4.2)
 });
 
 ipcMain.on('unlock-success', () => { unlockApp(); });
@@ -825,16 +847,16 @@ function checkAndDownloadUpdate() {
         path: '/repos/HuyTran1002/FaceID/releases/latest',
         method: 'GET',
         headers: { 'User-Agent': 'FaceID-AutoUpdater' },
-        timeout: 15000,
+        timeout: 20000, // Tăng lên 20s cho mạng yếu
         rejectUnauthorized: false
     };
 
-    https.get(options, (res) => {
+    const request = https.get(options, (res) => {
         let data = '';
         res.on('data', chunk => { data += chunk; });
         res.on('end', () => {
             if (res.statusCode !== 200) {
-                if (mainWindow) mainWindow.webContents.send('update-error', 'Không thể kết nối máy chủ GitHub.');
+                if (mainWindow) mainWindow.webContents.send('update-error', `GitHub trả về lỗi ${res.statusCode}.`);
                 return;
             }
             try {
@@ -844,12 +866,14 @@ function checkAndDownloadUpdate() {
                 if (isNewerVersion(latestVersion, packageJson.version)) {
                     const exeAsset = release.assets.find(a => a.name.endsWith('.exe'));
                     if (exeAsset) {
-                        mainWindow.show();
-                        mainWindow.webContents.send('update-available', {
-                            version: latestVersion,
-                            downloadUrl: exeAsset.browser_download_url,
-                            releaseNotes: release.body || "Bản cập nhật mới giúp tăng cường bảo mật."
-                        });
+                        if (mainWindow) {
+                            mainWindow.show();
+                            mainWindow.webContents.send('update-available', {
+                                version: latestVersion,
+                                downloadUrl: exeAsset.browser_download_url,
+                                releaseNotes: release.body || "Bản cập nhật mới giúp tăng cường bảo mật."
+                            });
+                        }
                     } else {
                         showSystemToast("Lỗi cập nhật", "Không tìm thấy file EXE trong bản phát hành mới.");
                     }
@@ -860,141 +884,159 @@ function checkAndDownloadUpdate() {
                 showSystemToast("Lỗi cập nhật", "Dữ liệu trả về từ GitHub không hợp lệ.");
             }
         });
-    }).on('error', (e) => {
-        showStyledPopup("Lỗi mạng hiển thị", "Tường lửa hoặc mạng công ty quá yếu. Lỗi: " + e.message);
-    }).on('timeout', () => {
-        showStyledPopup("Lỗi cập nhật", "Thời gian kết nối quá lâu. Mạng của bạn quá yếu.");
+    });
+
+    request.on('error', (e) => {
+        showStyledPopup("Lỗi kết nối", "Không thể kiểm tra cập nhật. Lỗi: " + e.message);
+    });
+
+    request.on('timeout', () => {
+        request.destroy();
+        showStyledPopup("Lỗi cập nhật", "Hết thời gian chờ kết nối (20s). Mạng quá yếu.");
     });
 }
 
-function installUpdate(downloadUrl) {
+/**
+ * Hàm tải file với cơ chế retry giống app Tính lương (v5.0.0)
+ */
+async function downloadFileWithRetry(url, dest, onProgress, maxRetries = 3) {
+    let lastError = null;
+    for (let i = 0; i < maxRetries; i++) {
+        try {
+            if (i > 0) {
+                onProgress(-1, `Kết nối bị gián đoạn. Đang thử lại lần ${i}/${maxRetries}...`);
+                await new Promise(resolve => setTimeout(resolve, 2000 * i)); // Exponential backoff
+            }
+            
+            await new Promise((resolve, reject) => {
+                const protocol = url.startsWith('https') ? https : http;
+                const options = {
+                    headers: { 'User-Agent': 'FaceID-AutoUpdater' },
+                    timeout: 1800000, // 30 phút timeout cho file lớn
+                    rejectUnauthorized: false
+                };
+
+                const request = protocol.get(url, options, (res) => {
+                    if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                        // Handle Redirect
+                        downloadFileWithRetry(res.headers.location, dest, onProgress, maxRetries - i)
+                            .then(resolve).catch(reject);
+                        return;
+                    }
+
+                    if (res.statusCode !== 200) {
+                        reject(new Error(`HTTP ${res.statusCode}`));
+                        return;
+                    }
+
+                    const totalBytes = parseInt(res.headers['content-length'], 10) || 0;
+                    let downloadedBytes = 0;
+                    const file = fs.createWriteStream(dest);
+
+                    res.on('data', (chunk) => {
+                        downloadedBytes += chunk.length;
+                        if (totalBytes > 0) {
+                            const percent = Math.round((downloadedBytes / totalBytes) * 100);
+                            onProgress(percent);
+                        }
+                    });
+
+                    res.pipe(file);
+
+                    file.on('error', (err) => {
+                        fs.unlink(dest, () => {});
+                        reject(err);
+                    });
+
+                    file.on('finish', () => {
+                        file.close(resolve);
+                    });
+                });
+
+                request.on('error', (err) => {
+                    fs.unlink(dest, () => {});
+                    reject(err);
+                });
+
+                request.on('timeout', () => {
+                    request.destroy();
+                    reject(new Error("Timeout (30m)"));
+                });
+            });
+            
+            return; // Thành công
+        } catch (err) {
+            lastError = err;
+            console.error(`Download attempt ${i+1} failed:`, err.message);
+        }
+    }
+    throw lastError || new Error("Download failed after retries");
+}
+
+async function installUpdate(downloadUrl) {
     if (!app.isPackaged) {
         mainWindow.webContents.send('update-error', 'Không thể cập nhật trong môi trường Develop.');
         return;
     }
 
-    // Xác định thư mục chứa file EXE gốc mà user đang chạy
     const portableExe = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
     const appDir = path.dirname(portableExe);
     const oldFileName = path.basename(portableExe);
-
-    // Tải file mới về CÙNG thư mục, đặt tên theo version từ GitHub
-    // Tạm dùng tên cố định, sẽ được rename nếu cần
     const newExePath = path.join(appDir, 'FaceID_Security_NEW.exe');
 
-    // Xóa file tải dở nếu có từ lần trước
+    // Dọn dẹp file cũ
     try { if (fs.existsSync(newExePath)) fs.unlinkSync(newExePath); } catch(e) {}
 
-    // Hàm download có thể follow cả HTTP lẫn HTTPS redirect
-    const downloadFollowRedirect = (url, redirectCount = 0) => {
-        if (redirectCount > 5) {
-            mainWindow.webContents.send('update-error', 'Quá nhiều redirect, hủy tải.');
-            return;
+    try {
+        await downloadFileWithRetry(downloadUrl, newExePath, (percent, msg) => {
+            if (msg) {
+                mainWindow.webContents.send('update-progress-msg', msg);
+            } else {
+                mainWindow.webContents.send('update-progress', Math.min(percent, 99));
+            }
+        }, 5); // Thử lại 5 lần cho chắc
+
+        // Kiểm tra file sau khi tải
+        const stats = fs.statSync(newExePath);
+        if (stats.size < 5 * 1024 * 1024) { // Tối thiểu 5MB
+            throw new Error(`File tải về không hợp lệ (${(stats.size/1024).toFixed(0)}KB).`);
         }
 
-        const protocol = url.startsWith('https') ? https : http;
-        const request = protocol.get(url, { headers: { 'User-Agent': 'FaceID-AutoUpdater' }, timeout: 60000, rejectUnauthorized: false }, (res) => {
-            // Redirect: drain response cũ rồi follow
-            if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-                res.resume();
-                downloadFollowRedirect(res.headers.location, redirectCount + 1);
-                return;
-            }
+        mainWindow.webContents.send('update-progress', 100);
+        mainWindow.webContents.send('update-progress-msg', "Tải xong! Đang cài đặt ẩn...");
 
-            if (res.statusCode !== 200) {
-                mainWindow.webContents.send('update-error', 'Lỗi HTTP khi tải: ' + res.statusCode);
-                return;
-            }
+        // SỬ DỤNG POWERSHELL ROBUST (Bắt chước app Tính Lương)
+        const escapedNewPath = newExePath.replace(/'/g, "''");
+        const escapedOriginalPath = portableExe.replace(/'/g, "''");
 
-            const totalBytes = parseInt(res.headers['content-length'], 10) || 0;
-            let downloadedBytes = 0;
-            const file = fs.createWriteStream(newExePath);
+        // Script PowerShell: Đợi app tắt, thử copy đè 15 lần, nếu thành công thì mở lại app
+        const psCommand = `Start-Sleep -s 1; $success = $false; for ($i=1; $i -le 15; $i++) { try { Copy-Item -Path '${escapedNewPath}' -Destination '${escapedOriginalPath}' -Force -ErrorAction Stop; $success = $true; break; } catch { Start-Sleep -s 1; } } if ($success) { Start-Process -FilePath '${escapedOriginalPath}'; } Remove-Item -Path '${escapedNewPath}' -ErrorAction SilentlyContinue;`;
 
-            res.on('data', (chunk) => {
-                downloadedBytes += chunk.length;
-                if (totalBytes > 0) {
-                    const percent = Math.round((downloadedBytes / totalBytes) * 100);
-                    mainWindow.webContents.send('update-progress', Math.min(percent, 99));
-                }
-            });
-
-            res.pipe(file);
-
-            file.on('error', (err) => {
-                mainWindow.webContents.send('update-error', 'Lỗi ghi file: ' + err.message);
-            });
-
-            file.on('finish', () => {
-                file.close(() => {
-                    // Kiểm tra sanity: file phải > 10MB mới là EXE hợp lệ
-                    try {
-                        const stats = fs.statSync(newExePath);
-                        if (stats.size < 10 * 1024 * 1024) {
-                            mainWindow.webContents.send('update-error',
-                                `File tải về quá nhỏ (${(stats.size / 1024).toFixed(0)} KB). Release có thể chưa đính kèm EXE.`);
-                            return;
-                        }
-                    } catch (e) {
-                        mainWindow.webContents.send('update-error', 'Không thể kiểm tra file: ' + e.message);
-                        return;
-                    }
-
-                    mainWindow.webContents.send('update-progress', 100);
-
-                    // ĐƠN GIẢN: Xóa file cũ bằng batch chờ app tắt, rename file mới thành tên cũ, rồi mở lại
-                    const batPath = path.join(appDir, '_faceid_update.bat');
-                    const batContent = [
-                        '@echo off',
-                        'title FaceID Updater',
-                        'echo Dang cap nhat FaceID Security...',
-                        'echo.',
-                        'echo Cho ung dung dong lai...',
-                        // Chờ đến khi file cũ không còn bị lock (thử xóa liên tục)
-                        ':RETRY',
-                        `del /f /q "${portableExe}" 2>nul`,
-                        `if exist "${portableExe}" (`,
-                        '  timeout /t 1 /nobreak >nul',
-                        '  goto RETRY',
-                        ')',
-                        'echo File cu da duoc xoa.',
-                        // Rename file mới thành tên file cũ
-                        `rename "${newExePath}" "${oldFileName}"`,
-                        'echo Da thay the thanh cong!',
-                        'echo Dang khoi dong lai...',
-                        // Mở file mới (đã được rename)
-                        `start "" "${portableExe}"`,
-                        // Tự xóa file batch
-                        `del /f /q "${batPath}"`,
-                    ].join('\r\n');
-
-                    fs.writeFileSync(batPath, batContent, 'ascii');
-
-                    // Spawn cmd.exe detached để batch chạy độc lập hoàn toàn
-                    const batProc = spawn('cmd.exe', ['/c', batPath], {
-                        detached: true,
-                        stdio: 'ignore',
-                        windowsHide: false  // Hiện cửa sổ CMD để user theo dõi
-                    });
-                    batProc.unref();
-
-                    // Chờ 800ms để batch kịp spawn xong rồi mới thoát
-                    setTimeout(() => {
-                        isLocked = false;
-                        globalShortcut.unregisterAll();
-                        if (pyProcess) pyProcess.kill();
-                        app.exit(0);
-                    }, 800);
-                });
-            });
+        const psProc = spawn('powershell.exe', [
+            '-NoProfile', 
+            '-WindowStyle', 'Hidden', 
+            '-Command', `"${psCommand}"`
+        ], {
+            detached: true,
+            stdio: 'ignore',
+            windowsHide: true
         });
+        psProc.unref();
 
-        request.on('error', (err) => {
-            mainWindow.webContents.send('update-error', 'Lỗi kết nối: ' + err.message);
-        });
-    };
+        // Thoát app
+        setTimeout(() => {
+            isLocked = false;
+            manageKeyGuard(false);
+            if (pyProcess) pyProcess.kill();
+            app.exit(0);
+        }, 1000);
 
-    downloadFollowRedirect(downloadUrl);
+    } catch (err) {
+        mainWindow.webContents.send('update-error', 'Lỗi tải xuống: ' + err.message);
+        try { if (fs.existsSync(newExePath)) fs.unlinkSync(newExePath); } catch(e) {}
+    }
 }
+
 
 ipcMain.on('start-update', (event, { downloadUrl }) => {
     installUpdate(downloadUrl);

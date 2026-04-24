@@ -81,7 +81,7 @@ function updateClock() {
 async function initCamera() {
     try {
         if (cameraStream) stopCamera();
-        cameraStream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, frameRate: 24 } });
+        cameraStream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720, frameRate: 24 } });
         video.srcObject = cameraStream;
     } catch (err) { 
         console.error("CAMERA ERROR", err);
@@ -326,7 +326,7 @@ function sendFrameToPython() {
     if (!video.videoWidth) return;
     pythonProcessing = true;
     
-    const targetWidth = 480;
+    const targetWidth = 640;
     const scale = targetWidth / video.videoWidth;
     const targetHeight = video.videoHeight * scale;
     
@@ -384,7 +384,7 @@ ipcRenderer.on('python-result', (event, result) => {
             completionText.innerText = `${scanProgress}%`;
             
             let statusPrefix = "";
-            if (result.cleanroom_mode) statusPrefix = "[CHẾ ĐỘ PHÒNG SẠCH] ";
+            if (result.cleanroom_mode) statusPrefix = "[PHÒNG SẠCH - OPTICS v5.0] ";
             else if (result.mask_detected) statusPrefix = "[CHẾ ĐỘ CHE KHUẤT] ";
             
             updateUIStatus(statusPrefix + (isRegistering ? `ĐANG PHÁC THẢO: ${scanProgress}%` : "ĐANG ĐỐI SOÁT..."));
@@ -394,7 +394,8 @@ ipcRenderer.on('python-result', (event, result) => {
             if (completionText) completionText.innerText = (result.progress || 0) + '%';
             
             // PROFILE VISION DISPLAY (v4.0 HUD)
-            if (result.profile_img) {
+            // Chỉ khóa mục tiêu và dừng roulette khi độ tin cậy > 30% (v4.4.1)
+            if (result.profile_img && (result.progress || 0) > 30) {
                 // Khóa vòng quay Roulette khi tìm thấy mục tiêu
                 if (rouletteInterval) {
                     clearInterval(rouletteInterval);
@@ -442,7 +443,17 @@ ipcRenderer.on('python-result', (event, result) => {
                 if (progressBar) progressBar.style.width = '0%';
                 if (completionText) completionText.innerText = '0%';
                 
-                scanScreen.classList.remove('matching');
+                // RESET HUD SEARCHING STATE (v4.4.3)
+                if (scanScreen.classList.contains('matching')) {
+                    scanScreen.classList.remove('matching');
+                    const badge = document.getElementById('match-name-badge');
+                    if (badge) {
+                        badge.innerText = "SEARCHING...";
+                        badge.classList.add('searching-blink');
+                    }
+                    if (isProcessing && !isRegistering) startFaceRoulette();
+                }
+
                 const canvas = document.getElementById('sculptor-canvas');
                 if (canvas) canvas.style.boxShadow = "0 0 25px rgba(255, 0, 0, 0.6)";
             }
@@ -654,9 +665,19 @@ ipcRenderer.on('update-error', (event, err) => {
 ipcRenderer.on('update-progress', (event, percent) => {
     document.getElementById('update-progress-container').style.display = 'block';
     document.getElementById('update-footer').style.display = 'none';
-    document.getElementById('update-progress-bar').style.width = percent + '%';
-    document.getElementById('update-status-text').innerText = `Đang tải: ${percent}%`;
+    if (percent >= 0) {
+        document.getElementById('update-progress-bar').style.width = percent + '%';
+        document.getElementById('update-status-text').innerText = `Đang tải: ${percent}%`;
+    }
 });
+
+ipcRenderer.on('update-progress-msg', (event, msg) => {
+    document.getElementById('update-progress-container').style.display = 'block';
+    document.getElementById('update-footer').style.display = 'none';
+    document.getElementById('update-status-text').innerText = msg;
+    document.getElementById('update-status-text').style.color = msg.includes('thử lại') ? '#ffcc00' : '#00f2ff';
+});
+
 
 document.getElementById('update-yes-btn').addEventListener('click', () => {
     if (updateUrl) {
