@@ -4,6 +4,7 @@ using System.Windows.Forms;
 using System.IO;
 using System.Net;
 using System.Threading.Tasks;
+using System.Diagnostics;
 
 namespace FaceID
 {
@@ -14,35 +15,27 @@ namespace FaceID
         public string downloadUrl;
     }
 
+    public class UpdateParams
+    {
+        public int ParentPid;
+        public Version CurrentVersion;
+        public string ExePath;
+        public string UserDataPath;
+    }
+
     public class UpdateChecker
     {
         private const string GITHUB_API_RELEASE_URL = "https://api.github.com/repos/HuyTran1002/FaceID/releases/latest";
-        private static bool isShowingUpdateDialog = false;
-
-        public static Version CurrentVersion
-        {
-            get
-            {
-                try
-                {
-                    var assembly = Assembly.GetEntryAssembly() ?? Assembly.GetExecutingAssembly();
-                    var version = assembly.GetName().Version;
-                    return version ?? new Version(1, 0, 0, 0);
-                }
-                catch { return new Version(1, 0, 0, 0); }
-            }
-        }
+        public static UpdateParams Params = new UpdateParams();
 
         public static async Task<UpdateResult> CheckForUpdateAsync()
         {
             string logPath = Path.Combine(Path.GetTempPath(), "FaceID_update_debug.log");
             try
             {
-                // Sử dụng WebClient để tương thích tối đa với .NET cũ
                 using (WebClient client = new WebClient())
                 {
                     client.Headers.Add("User-Agent", "FaceID-Updater/5.0");
-                    // Ép kiểu bảo mật TLS 1.2 cho GitHub (Bắt buộc)
                     ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072; 
 
                     string response = client.DownloadString(GITHUB_API_RELEASE_URL);
@@ -54,7 +47,8 @@ namespace FaceID
                     Version latestVersion;
                     if (Version.TryParse(versionString, out latestVersion))
                     {
-                        bool hasUpdate = latestVersion > CurrentVersion;
+                        // So sánh với phiên bản thực tế của FaceID truyền qua tham số
+                        bool hasUpdate = latestVersion > Params.CurrentVersion;
                         return new UpdateResult { hasUpdate = hasUpdate, latestVersion = versionString, downloadUrl = downloadUrl };
                     }
                 }
@@ -100,7 +94,7 @@ namespace FaceID
 
         public static void ShowAutoUpdateDialog(string latestVersion, string downloadUrl)
         {
-            UpdateForm updateForm = new UpdateForm(latestVersion, downloadUrl);
+            UpdateForm updateForm = new UpdateForm(latestVersion, downloadUrl, Params);
             updateForm.ShowDialog();
         }
     }
@@ -108,10 +102,25 @@ namespace FaceID
     public static class Program
     {
         [STAThread]
-        public static void Main()
+        public static void Main(string[] args)
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+
+            // Parse tham số từ Electron: [PID] [Version] [ExePath] [UserDataPath]
+            if (args.Length >= 4)
+            {
+                int.TryParse(args[0], out UpdateChecker.Params.ParentPid);
+                UpdateChecker.Params.CurrentVersion = new Version(args[1]);
+                UpdateChecker.Params.ExePath = args[2];
+                UpdateChecker.Params.UserDataPath = args[3];
+            }
+            else
+            {
+                // Mặc định nếu chạy tay không qua Electron
+                UpdateChecker.Params.CurrentVersion = new Version(1, 0, 0, 0);
+                UpdateChecker.Params.ExePath = Process.GetCurrentProcess().MainModule.FileName;
+            }
 
             var task = UpdateChecker.CheckForUpdateAsync();
             task.Wait();
@@ -123,7 +132,7 @@ namespace FaceID
             }
             else
             {
-                MessageBox.Show("Bạn đang sử dụng phiên bản mới nhất (v" + UpdateChecker.CurrentVersion + ")", "Thông báo", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("Bạn đang sử dụng phiên bản mới nhất (v" + UpdateChecker.Params.CurrentVersion + ")", "Thông báo", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
         }
     }

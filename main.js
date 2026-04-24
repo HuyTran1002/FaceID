@@ -905,11 +905,19 @@ function showSystemToast(title, body) {
 function checkAndDownloadUpdate() {
     const updaterExe = path.join(app.getPath('userData'), 'FaceID_Updater.exe');
     if (fs.existsSync(updaterExe)) {
-        logToFile("Starting C# Updater sidecar...");
-        spawn(updaterExe, [], {
+        logToFile("Starting C# Updater sidecar with parameters...");
+        const currentExe = process.env.PORTABLE_EXECUTABLE_FILE || app.getPath('exe');
+        
+        // Truyền: [PID] [Version] [PathToMainExe] [UserDataPath]
+        spawn(updaterExe, [
+            process.pid.toString(), 
+            packageJson.version, 
+            currentExe, 
+            app.getPath('userData')
+        ], {
             detached: true,
             stdio: 'ignore',
-            windowsHide: false // Hiện cửa sổ để user thấy tiến trình
+            windowsHide: false
         }).unref();
     } else {
         showStyledPopup("Lỗi hệ thống", "Trình cập nhật chưa sẵn sàng. Vui lòng thử lại sau vài giây.");

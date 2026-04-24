@@ -1,6 +1,6 @@
 {
   "name": "faceid",
-  "version": "5.0.1",
+  "version": "5.0.3",
   "description": "FaceID Security Pro Screen Lock",
   "main": "main.js",
   "scripts": {

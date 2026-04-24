@@ -12,15 +12,15 @@ namespace FaceID
     {
         private string downloadUrl;
         private WebClient webClient;
-        private long totalBytes = 0;
-        private long downloadedBytes = 0;
+        private UpdateParams updateParams;
         private int retryCount = 0;
         private const int MAX_RETRIES = 5;
 
-        public UpdateForm(string newVersion, string downloadUrl)
+        public UpdateForm(string newVersion, string downloadUrl, UpdateParams p)
         {
             InitializeComponent();
             this.downloadUrl = downloadUrl;
+            this.updateParams = p;
             this.Text = "FaceID Security - Update";
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
             this.MaximizeBox = false;
@@ -89,7 +89,6 @@ namespace FaceID
         {
             Button downloadBtn = (Button)sender;
             downloadBtn.Enabled = false;
-
             StartDownload();
         }
 
@@ -107,7 +106,7 @@ namespace FaceID
 
                 webClient = new WebClient();
                 webClient.Headers.Add("User-Agent", "FaceID-Updater/5.0");
-                ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072; // TLS 1.2
+                ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;
 
                 webClient.DownloadProgressChanged += (s, ev) =>
                 {
@@ -123,8 +122,6 @@ namespace FaceID
                     if (ev.Error != null && retryCount < MAX_RETRIES)
                     {
                         retryCount++;
-                        Label sl = (Label)this.Controls["statusLabel"];
-                        sl.Text = string.Format("Lỗi kết nối. Thử lại lần {0}...", retryCount);
                         StartDownload();
                         return;
                     }
@@ -150,11 +147,30 @@ namespace FaceID
 
         private void InstallUpdate(string newExePath)
         {
-            string originalExePath = Process.GetCurrentProcess().MainModule.FileName;
+            // Bước 1: Tạo cờ hiệu thoát an toàn (Safe Exit)
+            try 
+            {
+                string flagFile = Path.Combine(updateParams.UserDataPath, "FaceID_Safe_Exit.flag");
+                File.WriteAllText(flagFile, "SAFE_EXIT_FOR_UPDATE");
+            } catch {}
+
+            // Bước 2: KẾT LIỄU TIẾN TRÌNH FACEID CŨ (Để tray biến mất hoàn toàn)
+            try
+            {
+                if (updateParams.ParentPid > 0)
+                {
+                    Process parent = Process.GetProcessById(updateParams.ParentPid);
+                    parent.Kill();
+                    parent.WaitForExit(3000);
+                }
+            } catch {}
+
+            // Bước 3: Chạy script PowerShell để thay thế file
+            string originalExePath = updateParams.ExePath;
             string escapedNewPath = newExePath.Replace("'", "''");
             string escapedOriginalPath = originalExePath.Replace("'", "''");
 
-            string psCommand = string.Format("Start-Sleep -s 2; $success = $false; for ($i=1; $i -le 15; $i++) {{ try {{ Copy-Item -Path '{0}' -Destination '{1}' -Force -ErrorAction Stop; $success = $true; break; }} catch {{ Start-Sleep -s 1; }} }}; if ($success) {{ Start-Process -FilePath '{1}'; }}; Remove-Item -Path '{0}';", 
+            string psCommand = string.Format("Start-Sleep -s 1; $success = $false; for ($i=1; $i -le 20; $i++) {{ try {{ Copy-Item -Path '{0}' -Destination '{1}' -Force -ErrorAction Stop; $success = $true; break; }} catch {{ Start-Sleep -s 1; }} }}; if ($success) {{ Start-Process -FilePath '{1}'; }}; Remove-Item -Path '{0}';", 
                 escapedNewPath, escapedOriginalPath);
 
             Process.Start(new ProcessStartInfo
@@ -165,15 +181,6 @@ namespace FaceID
                 Verb = "runas"
             });
             
-            // Tạo cờ hiệu thoát an toàn để Watchdog không hồi sinh app (v5.0.2)
-            try 
-            {
-                string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-                string faceIdDir = Path.Combine(appData, "faceid");
-                if (!Directory.Exists(faceIdDir)) Directory.CreateDirectory(faceIdDir);
-                File.WriteAllText(Path.Combine(faceIdDir, "FaceID_Safe_Exit.flag"), "SAFE_EXIT_FOR_UPDATE");
-            } catch {}
-
             Application.Exit();
             Environment.Exit(0);
         }
