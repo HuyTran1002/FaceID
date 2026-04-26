@@ -708,7 +708,7 @@ app.whenReady().then(() => {
             app.setLoginItemSettings({
                 openAtLogin: true,
                 path: process.execPath,
-                args: app.isPackaged ? [] : [path.resolve('.')]
+                args: app.isPackaged ? [] : [__dirname] // Dùng __dirname để lấy đúng đường dẫn folder app (v4.4.3)
             });
         }
     } catch(e) {
