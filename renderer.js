@@ -19,6 +19,7 @@ let APP_CONFIG = { adminPass: '123456', secretPass: '999999' };
 let currentAuthAction = "";
 let cameraStream = null;
 let currentFPS = 10; // Mặc định 10 FPS để tiết kiệm CPU khi chờ (v4.2.0)
+let scanTimeout = null; // Quản lý thời gian chờ quét (v4.5.0)
 
 // UI ELEMENTS
 const video = document.getElementById('video');
@@ -236,6 +237,19 @@ async function startScan(mode, faceName = "") {
     
     await initCamera(); 
     triggerNextFrame(800); 
+
+    // --- OPTIMIZATION v4.5.0 ---
+    ipcRenderer.send('start-scanning');
+    document.body.classList.add('performance-mode');
+    
+    // Tự động dừng quét sau 60 giây để bảo vệ CPU (v4.5.0)
+    clearTimeout(scanTimeout);
+    scanTimeout = setTimeout(() => {
+        if (isProcessing) {
+            stopScan();
+            showNotification("HẾT THỜI GIAN", "Hệ thống tự động dừng quét khuôn mặt để tiết kiệm năng lượng.");
+        }
+    }, 60000);
 }
 
 function stopScan() {
@@ -248,6 +262,11 @@ function stopScan() {
     scanScreen.classList.remove('active', 'register-mode', 'detect-mode', 'matching');
     lockScreen.classList.add('active');
     if (sctx) sctx.clearRect(0, 0, sculptorCanvas.width, sculptorCanvas.height);
+
+    // --- OPTIMIZATION v4.5.0 ---
+    ipcRenderer.send('stop-scanning');
+    document.body.classList.remove('performance-mode');
+    clearTimeout(scanTimeout);
 }
 
 // --- FACE ROULETTE ENGINE v4.1 ---
@@ -374,6 +393,8 @@ ipcRenderer.on('python-result', (event, result) => {
         // Nếu thấy mặt hoặc đang xác thực, tăng tốc lên 24+ FPS. Nếu không thấy ai, giảm về 10 FPS.
         if (result.match || result.status === "verifying") {
             currentFPS = 24; 
+        } else if (result.status === "no_face") {
+            currentFPS = 5; // Giảm sâu xuống 5 FPS khi không thấy ai (v4.5.0)
         } else {
             currentFPS = 10;
         }

@@ -41,9 +41,28 @@ def adjust_gamma(image, gamma=1.0):
     return cv2.LUT(image, table)
 
 def get_stabilized_img(img):
-    # --- PRECISION OPTICS v5.0 (CLEANROOM OPTIMIZED) ---
-    # 1. Gamma Correction: Giảm cường độ ánh sáng gắt từ đèn LED phòng sạch
-    gamma_img = adjust_gamma(img, gamma=0.8) 
+    # --- ADAPTIVE OPTICS v6.0 (AUTO-GAMMA + CLEANROOM) ---
+    # 1. Auto-Gamma: Phân tích độ sáng trung bình và tự động điều chỉnh
+    gray_check = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    avg_brightness = np.mean(gray_check)
+    
+    if avg_brightness < 80:
+        # Ảnh TỐI (ngược sáng, thiếu sáng) → Tăng sáng mạnh
+        gamma = 1.8
+    elif avg_brightness < 120:
+        # Ảnh HƠI TỐI → Tăng sáng nhẹ
+        gamma = 1.3
+    elif avg_brightness > 200:
+        # Ảnh QUÁ SÁNG (đèn LED phòng sạch) → Giảm sáng
+        gamma = 0.7
+    elif avg_brightness > 170:
+        # Ảnh HƠI SÁNG → Giảm nhẹ
+        gamma = 0.85
+    else:
+        # Ảnh BÌNH THƯỜNG → Không chỉnh
+        gamma = 1.0
+    
+    gamma_img = adjust_gamma(img, gamma=gamma)
     
     # 2. CLAHE: Tăng cường độ tương phản cục bộ để nhìn rõ con ngươi sau lớp kính
     lab = cv2.cvtColor(gamma_img, cv2.COLOR_BGR2LAB)
@@ -280,75 +299,90 @@ while True:
             dists = face_recognition.face_distance(known_encs, cur_enc)
             min_dist = min(dists) if len(dists) > 0 else 1.0
             
-            if min_dist < current_threshold:
-                match_idx = np.argmin(dists)
-                user_obj = reg[match_idx]
-                match_name = user_obj['name']
-
-                # Lấy ảnh hồ sơ (Profile Vision v3.5.0)
-                profile_b64 = ""
-                if 'thumbnail' in user_obj:
-                    profile_path = os.path.join(user_data_path, 'profiles', user_obj['thumbnail'])
-                    if os.path.exists(profile_path):
-                        with open(profile_path, "rb") as img_f:
-                            profile_b64 = base64.b64encode(img_f.read()).decode('utf-8')
-
-                if scan_state["last_match"] == match_name:
-                    scan_state["verify_buffer"].append(min_dist)
-                else:
-                    scan_state["verify_buffer"] = [min_dist]
-                    scan_state["last_match"] = match_name
+            # --- CONSENSUS MATCH v6.1 (5-SCAN VOTING SYSTEM) ---
+            # Chuyển đổi face_distance sang % giống nhau (Ánh xạ lập phương)
+            # Công thức: (1 - dist³) * 100 → phản ánh đúng thang đo Euclide 128 chiều
+            similarity_pct = max(0.0, (1.0 - min_dist ** 3)) * 100.0
+            similarity_pct = round(similarity_pct, 2)
+            
+            match_idx = np.argmin(dists)
+            user_obj = reg[match_idx]
+            match_name = user_obj['name']
+            
+            # Lấy ảnh hồ sơ (Profile Vision v3.5.0)
+            profile_b64 = ""
+            if 'thumbnail' in user_obj:
+                profile_path = os.path.join(user_data_path, 'profiles', user_obj['thumbnail'])
+                if os.path.exists(profile_path):
+                    with open(profile_path, "rb") as img_f:
+                        profile_b64 = base64.b64encode(img_f.read()).decode('utf-8')
+            
+            # Tăng bộ đếm quét (tối đa 5 lần)
+            scan_state["verify_buffer"].append({"dist": min_dist, "similarity": similarity_pct, "name": match_name})
+            scan_count = len(scan_state["verify_buffer"])
+            max_scans = 5
+            
+            # --- CONSENSUS VOTING: 3/5 lần đạt ≥ 93% cùng 1 người → Mở khóa ---
+            VOTE_THRESHOLD_PCT = 93.0
+            VOTES_REQUIRED = 3
+            
+            # Đếm số phiếu đạt ngưỡng cho từng người
+            vote_counts = {}
+            for scan in scan_state["verify_buffer"]:
+                if scan["similarity"] >= VOTE_THRESHOLD_PCT:
+                    n = scan["name"]
+                    vote_counts[n] = vote_counts.get(n, 0) + 1
+            
+            # Tìm người có nhiều phiếu nhất
+            best_candidate = max(vote_counts, key=vote_counts.get) if vote_counts else None
+            best_votes = vote_counts.get(best_candidate, 0) if best_candidate else 0
+            
+            progress = int((scan_count / max_scans) * 100)
+            
+            if best_votes >= VOTES_REQUIRED:
+                # ĐẠT ĐỦ PHIẾU → MỞ KHÓA
+                scan_state["verify_buffer"] = []
+                scan_state["miss_counter"] = 0
+                scan_state["last_match"] = None
+                print(json.dumps({
+                    "success": True, 
+                    "status": "success", 
+                    "match": best_candidate, 
+                    "profile_img": profile_b64,
+                    "features": features, 
+                    "pitch": pitch,
+                    "similarity": similarity_pct,
+                    "security_level": "STRICT" if mouth_occluded else "NORMAL"
+                }), flush=True)
+            elif scan_count >= max_scans:
+                # HẾT 5 LẦN QUÉT → Không đủ phiếu → Từ chối
+                best_scan = max(scan_state["verify_buffer"], key=lambda x: x["similarity"])
+                scan_state["verify_buffer"] = []
+                scan_state["miss_counter"] = 0
+                scan_state["last_match"] = None
                 
-                verify_count = len(scan_state["verify_buffer"])
-                progress = int((verify_count / 10) * 100)
-                
-                if verify_count >= 10:
-                    scan_state["verify_buffer"] = []
-                    scan_state["miss_counter"] = 0
-                    print(json.dumps({
-                        "success": True, 
-                        "status": "success", 
-                        "match": match_name, 
-                        "profile_img": profile_b64,
-                        "features": features, 
-                        "pitch": pitch,
-                        "security_level": "STRICT" if mouth_occluded else "NORMAL"
-                    }), flush=True)
-                else:
-                    scan_state["miss_counter"] = 0 # Reset miss counter khi có frame khớp
-                    print(json.dumps({
-                        "success": True, 
-                        "status": "verifying", 
-                        "match": match_name, 
-                        "profile_img": profile_b64,
-                        "progress": progress, 
-                        "features": features, 
-                        "pitch": pitch,
-                        "detail": f"Đang xác thực bảo mật {('GẮT GAO' if mouth_occluded else 'TIÊU CHUẨN')} ({verify_count}/10)..."
-                    }), flush=True)
+                print(json.dumps({
+                    "success": True, 
+                    "status": "unknown", 
+                    "features": features, 
+                    "pitch": pitch, 
+                    "occlusion": mouth_occluded,
+                    "detail": f"Không đủ phiếu xác thực ({best_votes}/{VOTES_REQUIRED}). Cao nhất: {best_scan['similarity']:.1f}%"
+                }), flush=True)
             else:
-                # --- TOLERANCE LOGIC v4.2.0 (PERSISTENCE) ---
-                # Cho phép sai số lên đến 3 khung hình trước khi hủy bỏ buffer
-                if len(scan_state["verify_buffer"]) > 0:
-                    scan_state["miss_counter"] += 1
-                    if scan_state["miss_counter"] > 3:
-                        scan_state["verify_buffer"] = []
-                        scan_state["miss_counter"] = 0
-                        print(json.dumps({"success": True, "status": "unknown", "features": features, "pitch": pitch, "occlusion": mouth_occluded}), flush=True)
-                    else:
-                        # Vẫn gửi trạng thái đang xác định để không bị khựng UI
-                        progress = int((len(scan_state["verify_buffer"]) / 10) * 100)
-                        print(json.dumps({
-                            "success": True, 
-                            "status": "verifying", 
-                            "match": scan_state["last_match"] or "MASTER", 
-                            "progress": progress, 
-                            "features": features, 
-                            "pitch": pitch,
-                            "detail": f"ĐANG ỔN ĐỊNH TÍN HIỆU ({len(scan_state['verify_buffer'])}/10)..."
-                        }), flush=True)
-                else:
-                    print(json.dumps({"success": True, "status": "unknown", "features": features, "pitch": pitch, "occlusion": mouth_occluded}), flush=True)
+                # ĐANG QUÉT → Hiển thị tiến trình
+                scan_state["last_match"] = match_name
+                print(json.dumps({
+                    "success": True, 
+                    "status": "verifying", 
+                    "match": match_name, 
+                    "profile_img": profile_b64,
+                    "progress": progress, 
+                    "features": features, 
+                    "pitch": pitch,
+                    "similarity": similarity_pct,
+                    "detail": f"QUÉT {scan_count}/{max_scans} — Giống: {similarity_pct:.1f}% | Phiếu: {best_votes}/{VOTES_REQUIRED}"
+                }), flush=True)
         elif mode == 'register':
             # --- SOFTEN ANTI-COLLISION v4.2.0 ---
             reg = get_faces(user_data_path)

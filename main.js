@@ -1,10 +1,11 @@
 const { app, BrowserWindow, Tray, Menu, ipcMain, screen, globalShortcut, dialog, Notification, powerSaveBlocker, powerMonitor } = require('electron');
 
 // Chế độ Tương thích Tuyệt đối (v1.1.32) - Khôi phục Camera & Ổn định UI
-app.commandLine.appendSwitch('disable-gpu');
-app.commandLine.appendSwitch('disable-software-rasterizer');
-app.commandLine.appendSwitch('disable-gpu-compositing');
+// app.commandLine.appendSwitch('disable-gpu');
+// app.commandLine.appendSwitch('disable-software-rasterizer');
+// app.commandLine.appendSwitch('disable-gpu-compositing');
 app.commandLine.appendSwitch('no-sandbox');
+app.commandLine.appendSwitch('disable-gpu-shader-disk-cache'); // Tránh lỗi Access Denied khi tạo cache (v4.5.1)
 
 const path = require('path');
 const fs = require('fs');
@@ -611,8 +612,8 @@ function lockApp() {
     // Tối ưu năng lượng: Ngăn máy ngủ khi đang khóa (v4.2.0)
     if (psBlockerId === null) psBlockerId = powerSaveBlocker.start('prevent-display-sleep');
 
-    // Tối ưu ưu tiên: Đẩy AI lên hàng đầu để nhận diện nhạy (v4.2.0)
-    setSidecarPriority('high');
+    // Tối ưu ưu tiên: Để ở mức thấp khi mới khóa, chỉ nâng lên khi bắt đầu quét (v4.5.0)
+    setSidecarPriority('idle');
 
     mainWindow.webContents.send('app-locked');
 }
@@ -797,6 +798,16 @@ ipcMain.on('update-config', (event, newConfig) => {
     saveConfig();
     logToFile(`Config updated: AutoLock=${config.autoLockTimer}s`);
     event.reply('config-updated', { success: true });
+});
+
+// --- IPC ĐIỀU PHỐI ƯU TIÊN AI (v4.5.0) ---
+ipcMain.on('start-scanning', () => {
+    setSidecarPriority('high');
+});
+
+ipcMain.on('stop-scanning', () => {
+    if (isLocked) setSidecarPriority('idle');
+    else setSidecarPriority('normal');
 });
 
 ipcMain.on('update-settings', (event, { newAdminPass, newSecretPass }) => {
