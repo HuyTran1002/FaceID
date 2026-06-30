@@ -18,9 +18,9 @@ import atexit
 def log_status(status, detail=""):
     print(json.dumps({"status": status, "detail": detail}), flush=True)
 
-log_status("SCULPTOR_SHELL_INIT", "Precision Optics Core v3.1.0 Starting...")
+log_status("SCULPTOR_SHELL_INIT", "Precision Optics Core v6.0.0 Starting (Anti-Spoofing Enabled)...")
 
-# State v2.8.0
+# State v2.8.0 + Anti-Spoofing v6.0
 scan_state = {
     "is_active": False, 
     "encodings": [], 
@@ -29,10 +29,210 @@ scan_state = {
     "last_match": None,    # Lưu tên người dùng khớp gần nhất
     "best_reg_frame": None, # Ảnh nhìn thẳng nhất để làm profile
     "best_reg_pitch": 999.0, # Độ nghiêng thấp nhất tìm thấy
-    "miss_counter": 0        # Bộ đếm sai số linh hoạt (v4.2.0)
+    "miss_counter": 0,       # Bộ đếm sai số linh hoạt (v4.2.0)
+    # --- ANTI-SPOOFING STATE v6.0 ---
+    "liveness": {
+        "ear_history": [],      # Lịch sử EAR để phát hiện chớp mắt
+        "blink_detected": False,# Đã phát hiện chớp mắt chưa
+        "blink_count": 0,       # Số lần chớp mắt
+        "consec_low_ear": 0,    # Số frame liên tiếp EAR thấp (đang nhắm)
+        "spoof_score_history": [], # Lịch sử điểm spoofing
+        "frames_checked": 0     # Số frame đã kiểm tra liveness
+    }
 }
 last_biodata_update = 0
 current_biodata = {"bpm": 72, "depth": 0.5, "focus": 0.95, "skin": "#00f2ff"}
+
+# --- ANTI-SPOOFING ENGINE v6.0 (3-LAYER LIVENESS DETECTION) ---
+
+def compute_ear(landmarks, eye_indices, w, h):
+    """Tính Eye Aspect Ratio (EAR) từ 6 điểm landmark mắt.
+    EAR = (|p2-p6| + |p3-p5|) / (2 * |p1-p4|)
+    Mắt mở: ~0.25-0.35, Đang chớp: <0.21, Nhắm: <0.15
+    """
+    pts = [(landmarks[i].x * w, landmarks[i].y * h) for i in eye_indices]
+    vertical_1 = np.sqrt((pts[1][0] - pts[5][0])**2 + (pts[1][1] - pts[5][1])**2)
+    vertical_2 = np.sqrt((pts[2][0] - pts[4][0])**2 + (pts[2][1] - pts[4][1])**2)
+    horizontal = np.sqrt((pts[0][0] - pts[3][0])**2 + (pts[0][1] - pts[3][1])**2)
+    if horizontal < 1e-6:
+        return 0.3  # Tránh chia cho 0
+    return (vertical_1 + vertical_2) / (2.0 * horizontal)
+
+def check_texture_liveness(roi_gray):
+    """Lớp 1: Phân tích kết cấu bằng LBP + Laplacian.
+    Ảnh thật có kết cấu vi mô (lỗ chân lông, nếp nhăn) → variance LBP cao.
+    Ảnh chụp lại bị mất chi tiết → variance LBP thấp.
+    Returns: (is_live, score) where score 0.0-1.0
+    """
+    try:
+        resized = cv2.resize(roi_gray, (128, 128))
+        
+        # 1. LBP Vectorized (NumPy) — ~100x nhanh hơn Python loop
+        center = resized[1:-1, 1:-1].astype(np.int16)
+        lbp = np.zeros_like(center, dtype=np.uint8)
+        lbp |= np.uint8(resized[0:-2, 0:-2] >= center) << 7  # top-left
+        lbp |= np.uint8(resized[0:-2, 1:-1] >= center) << 6  # top
+        lbp |= np.uint8(resized[0:-2, 2:]   >= center) << 5  # top-right
+        lbp |= np.uint8(resized[1:-1, 2:]   >= center) << 4  # right
+        lbp |= np.uint8(resized[2:,   2:]   >= center) << 3  # bottom-right
+        lbp |= np.uint8(resized[2:,   1:-1] >= center) << 2  # bottom
+        lbp |= np.uint8(resized[2:,   0:-2] >= center) << 1  # bottom-left
+        lbp |= np.uint8(resized[1:-1, 0:-2] >= center)       # left
+        
+        # Tính histogram LBP và chuẩn hóa
+        hist, _ = np.histogram(lbp.ravel(), bins=256, range=(0, 256))
+        hist = hist.astype(np.float64)
+        hist /= (hist.sum() + 1e-7)
+        
+        # Variance của histogram → ảnh thật có phân bố đều hơn
+        lbp_variance = np.var(hist)
+        
+        # 2. Laplacian variance → đo độ sắc nét micro
+        laplacian = cv2.Laplacian(resized, cv2.CV_64F)
+        lap_var = laplacian.var()
+        
+        # Chuẩn hóa điểm (0-1)
+        lbp_score = min(1.0, lbp_variance / 0.015)
+        lap_score = min(1.0, lap_var / 500.0)
+        
+        combined_score = lbp_score * 0.5 + lap_score * 0.5
+        is_live = combined_score > 0.35
+        
+        return is_live, round(combined_score, 3)
+    except Exception:
+        return True, 0.5  # Lỗi → cho qua (fail-open)
+
+def check_blink_liveness(landmarks, w, h, liveness_state):
+    """Lớp 2: Phát hiện chớp mắt bằng Eye Aspect Ratio.
+    Ảnh tĩnh không bao giờ có EAR thay đổi → bị phát hiện.
+    Returns: (blink_detected_overall, current_ear, blink_count)
+    """
+    LEFT_EYE = [33, 160, 158, 133, 153, 144]
+    RIGHT_EYE = [362, 385, 387, 263, 373, 380]
+    
+    left_ear = compute_ear(landmarks, LEFT_EYE, w, h)
+    right_ear = compute_ear(landmarks, RIGHT_EYE, w, h)
+    avg_ear = (left_ear + right_ear) / 2.0
+    
+    # v6.1: Giảm ngưỡng để tương thích kính dày
+    # Kính làm EAR tự nhiên thấp hơn (~0.18-0.22 thay vì 0.25-0.35)
+    EAR_THRESHOLD = 0.17
+    CONSEC_FRAMES = 1  # v6.1: Chỉ cần 1 frame EAR thấp = đang chớp
+    
+    # Lưu lịch sử EAR
+    liveness_state["ear_history"].append(avg_ear)
+    if len(liveness_state["ear_history"]) > 30:
+        liveness_state["ear_history"] = liveness_state["ear_history"][-30:]
+    
+    # Phát hiện chớp mắt
+    if avg_ear < EAR_THRESHOLD:
+        liveness_state["consec_low_ear"] += 1
+    else:
+        if liveness_state["consec_low_ear"] >= CONSEC_FRAMES:
+            # Một cú chớp mắt hoàn chỉnh: EAR giảm → rồi tăng lại
+            liveness_state["blink_count"] += 1
+            liveness_state["blink_detected"] = True
+        liveness_state["consec_low_ear"] = 0
+    
+    # v6.1: Kiểm tra ảnh tĩnh CHỈ KHI chưa phát hiện blink
+    # Một khi đã chớp mắt thành công → KHÔNG bao giờ reset
+    if not liveness_state["blink_detected"] and len(liveness_state["ear_history"]) >= 20:
+        ear_std = np.std(liveness_state["ear_history"][-20:])
+        # Ảnh tĩnh: std < 0.001 (EAR hoàn toàn không đổi qua 20 frame)
+        if ear_std < 0.001:
+            liveness_state["blink_detected"] = False
+            liveness_state["blink_count"] = 0
+    
+    return liveness_state["blink_detected"], round(avg_ear, 3), liveness_state["blink_count"]
+
+def check_frequency_liveness(roi_gray):
+    """Lớp 3: Phân tích phổ tần số Fourier để phát hiện moiré pattern.
+    Màn hình LCD tạo ra peak tần số cao đặc trưng do pixel grid.
+    Returns: (is_live, score) where score 0.0-1.0
+    """
+    try:
+        resized = cv2.resize(roi_gray, (128, 128)).astype(np.float64)
+        
+        # FFT 2D
+        f_transform = np.fft.fft2(resized)
+        f_shift = np.fft.fftshift(f_transform)
+        magnitude = np.log1p(np.abs(f_shift))
+        
+        rows, cols = magnitude.shape
+        crow, ccol = rows // 2, cols // 2
+        
+        # Vùng tần số thấp (trung tâm)
+        r_low = int(min(rows, cols) * 0.15)
+        y_grid, x_grid = np.ogrid[:rows, :cols]
+        low_freq_mask = ((y_grid - crow)**2 + (x_grid - ccol)**2) <= r_low**2
+        
+        # Vùng tần số cao (rìa)
+        r_high = int(min(rows, cols) * 0.35)
+        high_freq_mask = ((y_grid - crow)**2 + (x_grid - ccol)**2) > r_high**2
+        
+        low_energy = np.sum(magnitude[low_freq_mask])
+        high_energy = np.sum(magnitude[high_freq_mask])
+        total_energy = np.sum(magnitude) + 1e-7
+        
+        high_ratio = high_energy / total_energy
+        
+        score = max(0.0, 1.0 - (high_ratio / 0.40))
+        is_live = high_ratio < 0.32
+        
+        return is_live, round(score, 3)
+    except Exception:
+        return True, 0.5
+
+def run_liveness_check(roi, landmarks, w, h, liveness_state):
+    """Chạy 3 lớp anti-spoofing và tổng hợp kết quả."""
+    roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if len(roi.shape) == 3 else roi
+    
+    # Lớp 1: Texture
+    tex_live, tex_score = check_texture_liveness(roi_gray)
+    
+    # Lớp 2: Blink
+    blink_ok, current_ear, blink_count = check_blink_liveness(landmarks, w, h, liveness_state)
+    
+    # Lớp 3: Frequency
+    freq_live, freq_score = check_frequency_liveness(roi_gray)
+    
+    liveness_state["frames_checked"] += 1
+    
+    # Quyết định: cần pass ít nhất 1/2 passive check (texture + frequency)
+    passive_checks_passed = sum([tex_live, freq_live])
+    is_passive_live = passive_checks_passed >= 1
+    
+    # Lưu điểm spoofing
+    spoof_score = (tex_score + freq_score) / 2.0
+    liveness_state["spoof_score_history"].append(spoof_score)
+    if len(liveness_state["spoof_score_history"]) > 10:
+        liveness_state["spoof_score_history"] = liveness_state["spoof_score_history"][-10:]
+    
+    # Trung bình điểm qua nhiều frame để ổn định
+    avg_spoof_score = np.mean(liveness_state["spoof_score_history"])
+    
+    return {
+        "is_passive_live": is_passive_live,
+        "blink_detected": blink_ok,
+        "blink_count": blink_count,
+        "current_ear": current_ear,
+        "texture_score": tex_score,
+        "frequency_score": freq_score,
+        "liveness_score": round(avg_spoof_score, 2),
+        "frames_checked": liveness_state["frames_checked"],
+        "is_spoofing": not is_passive_live and liveness_state["frames_checked"] >= 5 and avg_spoof_score < 0.30
+    }
+
+def reset_liveness_state():
+    """Reset trạng thái liveness khi bắt đầu phiên quét mới."""
+    scan_state["liveness"] = {
+        "ear_history": [],
+        "blink_detected": False,
+        "blink_count": 0,
+        "consec_low_ear": 0,
+        "spoof_score_history": [],
+        "frames_checked": 0
+    }
 
 def adjust_gamma(image, gamma=1.0):
     # Cân bằng lại độ sáng để khử lóa (v5.0)
@@ -218,6 +418,9 @@ while True:
         if not image_b64: continue
         if mode == 'register' and not scan_state.get("is_active"):
             scan_state.update({"is_active": True, "encodings": [], "angles": [], "best_reg_frame": None, "best_reg_pitch": 999.0})
+            reset_liveness_state()
+        if mode == 'detect' and scan_state["liveness"]["frames_checked"] == 0:
+            reset_liveness_state()  # Reset liveness khi bắt đầu phiên detect mới
         if isinstance(image_b64, str) and ',' in image_b64: image_b64 = image_b64.split(',')[1]
         img_bytes = base64.b64decode(image_b64)
         nparr = np.frombuffer(img_bytes, np.uint8)
@@ -299,6 +502,23 @@ while True:
             dists = face_recognition.face_distance(known_encs, cur_enc)
             min_dist = min(dists) if len(dists) > 0 else 1.0
             
+            # --- ANTI-SPOOFING CHECK v6.0 ---
+            liveness_result = run_liveness_check(roi, landmarks, w, h, scan_state["liveness"])
+            
+            # Nếu phát hiện spoofing rõ ràng → từ chối ngay
+            if liveness_result["is_spoofing"]:
+                scan_state["verify_buffer"] = []
+                reset_liveness_state()
+                print(json.dumps({
+                    "success": True,
+                    "status": "spoofing_detected",
+                    "features": features,
+                    "pitch": pitch,
+                    "liveness": liveness_result["liveness_score"],
+                    "detail": f"⚠️ PHÁT HIỆN GIẢ MẠO! Texture: {liveness_result['texture_score']:.0%} | Freq: {liveness_result['frequency_score']:.0%}"
+                }), flush=True)
+                continue
+            
             # --- CONSENSUS MATCH v6.1 (5-SCAN VOTING SYSTEM) ---
             # Chuyển đổi face_distance sang % giống nhau (Ánh xạ lập phương)
             # Công thức: (1 - dist³) * 100 → phản ánh đúng thang đo Euclide 128 chiều
@@ -339,11 +559,38 @@ while True:
             
             progress = int((scan_count / max_scans) * 100)
             
+            # Thông tin liveness cho UI
+            liveness_info = {
+                "liveness_score": liveness_result["liveness_score"],
+                "blink_count": liveness_result["blink_count"],
+                "blink_ok": liveness_result["blink_detected"],
+                "ear": liveness_result["current_ear"]
+            }
+            
             if best_votes >= VOTES_REQUIRED:
-                # ĐẠT ĐỦ PHIẾU → MỞ KHÓA
+                # --- KIỂM TRA BLINK TRƯỚC KHI MỞ KHÓA (v6.0) ---
+                if not liveness_result["blink_detected"]:
+                    # Đủ phiếu nhận diện NHƯNG chưa chớp mắt → yêu cầu chớp mắt
+                    print(json.dumps({
+                        "success": True,
+                        "status": "blink_required",
+                        "match": best_candidate,
+                        "profile_img": profile_b64,
+                        "progress": progress,
+                        "features": features,
+                        "pitch": pitch,
+                        "similarity": similarity_pct,
+                        "liveness": liveness_info,
+                        "detail": f"✅ Nhận diện OK ({similarity_pct:.1f}%) — Vui lòng CHỚP MẮT để xác nhận người thật"
+                    }), flush=True)
+                    # KHÔNG reset verify_buffer - giữ phiếu, chờ blink
+                    continue
+                
+                # ĐẠT ĐỦ PHIẾU + ĐÃ CHỚP MẮT → MỞ KHÓA
                 scan_state["verify_buffer"] = []
                 scan_state["miss_counter"] = 0
                 scan_state["last_match"] = None
+                reset_liveness_state()
                 print(json.dumps({
                     "success": True, 
                     "status": "success", 
@@ -352,6 +599,7 @@ while True:
                     "features": features, 
                     "pitch": pitch,
                     "similarity": similarity_pct,
+                    "liveness": liveness_info,
                     "security_level": "STRICT" if mouth_occluded else "NORMAL"
                 }), flush=True)
             elif scan_count >= max_scans:
@@ -360,6 +608,7 @@ while True:
                 scan_state["verify_buffer"] = []
                 scan_state["miss_counter"] = 0
                 scan_state["last_match"] = None
+                reset_liveness_state()
                 
                 print(json.dumps({
                     "success": True, 
@@ -367,11 +616,13 @@ while True:
                     "features": features, 
                     "pitch": pitch, 
                     "occlusion": mouth_occluded,
+                    "liveness": liveness_info,
                     "detail": f"Không đủ phiếu xác thực ({best_votes}/{VOTES_REQUIRED}). Cao nhất: {best_scan['similarity']:.1f}%"
                 }), flush=True)
             else:
                 # ĐANG QUÉT → Hiển thị tiến trình
                 scan_state["last_match"] = match_name
+                blink_status = f" | 👁️ Blink: {'✓' if liveness_result['blink_detected'] else '✗'}({liveness_result['blink_count']})"
                 print(json.dumps({
                     "success": True, 
                     "status": "verifying", 
@@ -381,7 +632,8 @@ while True:
                     "features": features, 
                     "pitch": pitch,
                     "similarity": similarity_pct,
-                    "detail": f"QUÉT {scan_count}/{max_scans} — Giống: {similarity_pct:.1f}% | Phiếu: {best_votes}/{VOTES_REQUIRED}"
+                    "liveness": liveness_info,
+                    "detail": f"QUÉT {scan_count}/{max_scans} — Giống: {similarity_pct:.1f}% | Phiếu: {best_votes}/{VOTES_REQUIRED}{blink_status}"
                 }), flush=True)
         elif mode == 'register':
             # --- SOFTEN ANTI-COLLISION v4.2.0 ---

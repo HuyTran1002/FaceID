@@ -200,6 +200,31 @@ function updateBioOverlay(bio) {
     overlay.style.borderLeftColor = bio.skin;
 }
 
+// --- LIVENESS HUD v6.0 ---
+function updateLivenessHUD(liveness) {
+    let overlay = document.getElementById('liveness-overlay');
+    if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'liveness-overlay';
+        overlay.className = 'liveness-overlay';
+        const bioOverlay = document.getElementById('bio-overlay');
+        if (bioOverlay && bioOverlay.parentNode) {
+            bioOverlay.parentNode.insertBefore(overlay, bioOverlay.nextSibling);
+        } else {
+            document.body.appendChild(overlay);
+        }
+    }
+    
+    const scoreColor = liveness.liveness_score >= 0.5 ? '#00ff88' : liveness.liveness_score >= 0.3 ? '#ffcc00' : '#ff4444';
+    const blinkIcon = liveness.blink_ok ? '✅' : '⏳';
+    
+    overlay.innerHTML = `
+        <div class="bio-stat"><span>LIVE:</span> <span style="color:${scoreColor}; text-shadow: 0 0 5px ${scoreColor}">${Math.round(liveness.liveness_score * 100)}%</span></div>
+        <div class="bio-stat"><span>BLINK:</span> <span>${blinkIcon} ${liveness.blink_count || 0}</span></div>
+        <div class="bio-stat"><span>EAR:</span> <span>${liveness.ear || '—'}</span></div>
+    `;
+}
+
 // --- SCANNING SYSTEM ---
 async function startScan(mode, faceName = "") {
     isProcessing = true;
@@ -389,14 +414,20 @@ ipcRenderer.on('python-result', (event, result) => {
     if (result.success) {
         if (result.features) drawFaceSketch(result);
 
-        // --- DYNAMIC AI TURBO MODE v4.2.0 ---
-        // Nếu thấy mặt hoặc đang xác thực, tăng tốc lên 24+ FPS. Nếu không thấy ai, giảm về 10 FPS.
-        if (result.match || result.status === "verifying") {
+        // --- DYNAMIC AI TURBO MODE v4.2.0 + ANTI-SPOOFING v6.0 ---
+        if (result.match || result.status === "verifying" || result.status === "blink_required") {
             currentFPS = 24; 
         } else if (result.status === "no_face") {
-            currentFPS = 5; // Giảm sâu xuống 5 FPS khi không thấy ai (v4.5.0)
+            currentFPS = 5;
+        } else if (result.status === "spoofing_detected") {
+            currentFPS = 5; // Giảm FPS khi phát hiện spoofing
         } else {
             currentFPS = 10;
+        }
+
+        // --- LIVENESS HUD UPDATE v6.0 ---
+        if (result.liveness) {
+            updateLivenessHUD(result.liveness);
         }
 
         if (result.status === "sculpting") {
@@ -409,15 +440,64 @@ ipcRenderer.on('python-result', (event, result) => {
             else if (result.mask_detected) statusPrefix = "[CHẾ ĐỘ CHE KHUẤT] ";
             
             updateUIStatus(statusPrefix + (isRegistering ? `ĐANG PHÁC THẢO: ${scanProgress}%` : "ĐANG ĐỐI SOÁT..."));
+            scanScreen.classList.remove('spoofing-alert', 'blink-prompt');
+        } else if (result.status === "spoofing_detected") {
+            // --- ANTI-SPOOFING: PHÁT HIỆN GIẢ MẠO v6.0 ---
+            updateUIStatus(result.detail || "⚠️ PHÁT HIỆN GIẢ MẠO!");
+            scanScreen.classList.add('spoofing-alert');
+            scanScreen.classList.remove('blink-prompt', 'matching');
+            
+            if (progressBar) progressBar.style.width = '0%';
+            if (completionText) completionText.innerText = '⚠️';
+            
+            const canvas = document.getElementById('sculptor-canvas');
+            if (canvas) canvas.style.boxShadow = "0 0 30px rgba(255, 0, 0, 0.8)";
+            
+            // Reset roulette
+            if (rouletteInterval) {
+                clearInterval(rouletteInterval);
+                rouletteInterval = null;
+            }
+            const badge = document.getElementById('match-name-badge');
+            if (badge) {
+                badge.innerText = "⚠️ GIẢ MẠO";
+                badge.classList.remove('searching-blink');
+            }
+        } else if (result.status === "blink_required") {
+            // --- ANTI-SPOOFING: YÊU CẦU CHỚP MẮT v6.0 ---
+            updateUIStatus(result.detail || "👁️ VUI LÒNG CHỚP MẮT ĐỂ XÁC NHẬN");
+            scanScreen.classList.add('blink-prompt');
+            scanScreen.classList.remove('spoofing-alert');
+            
+            if (progressBar) progressBar.style.width = (result.progress || 0) + '%';
+            if (completionText) completionText.innerText = '👁️';
+            
+            // Hiển thị profile nếu có
+            if (result.profile_img) {
+                if (rouletteInterval) {
+                    clearInterval(rouletteInterval);
+                    rouletteInterval = null;
+                }
+                const imgEl = document.getElementById('profile-match-img');
+                const badge = document.getElementById('match-name-badge');
+                if (imgEl && result.profile_img) imgEl.src = `data:image/jpeg;base64,${result.profile_img}`;
+                if (badge) {
+                    badge.innerText = result.match ? `👁️ ${result.match.toUpperCase()}` : "👁️ CHỚP MẮT";
+                    badge.classList.remove('searching-blink');
+                }
+                scanScreen.classList.add('matching');
+            }
+            
+            const canvas = document.getElementById('sculptor-canvas');
+            if (canvas) canvas.style.boxShadow = "0 0 25px rgba(255, 200, 0, 0.6)";
         } else if (result.status === "verifying") {
             updateUIStatus(result.detail || "ĐANG XÁC THỰC BẢO MẬT...");
             if (progressBar) progressBar.style.width = (result.progress || 0) + '%';
             if (completionText) completionText.innerText = (result.progress || 0) + '%';
+            scanScreen.classList.remove('spoofing-alert', 'blink-prompt');
             
             // PROFILE VISION DISPLAY (v4.0 HUD)
-            // Chỉ khóa mục tiêu và dừng roulette khi độ tin cậy > 30% (v4.4.1)
             if (result.profile_img && (result.progress || 0) > 30) {
-                // Khóa vòng quay Roulette khi tìm thấy mục tiêu
                 if (rouletteInterval) {
                     clearInterval(rouletteInterval);
                     rouletteInterval = null;
@@ -439,6 +519,7 @@ ipcRenderer.on('python-result', (event, result) => {
             showNotification("ĐĂNG KÝ THÀNH CÔNG", "Dữ liệu khuôn mặt đã được lưu trữ an toàn.");
             stopScan();
         } else if (result.status === "success" || result.status === "unknown") {
+            scanScreen.classList.remove('spoofing-alert', 'blink-prompt');
             if (result.status === "success") {
                 isProcessing = false;
                 stopCamera();
@@ -450,9 +531,10 @@ ipcRenderer.on('python-result', (event, result) => {
                 updateUIStatus(`XIN CHÀO: ${welcomeName}!`);
                 if (progressBar) progressBar.style.width = '100%';
                 
+                const livenessMsg = result.liveness ? ` | Liveness: ${Math.round((result.liveness.liveness_score || 0) * 100)}%` : '';
                 showNotification(
                     isStrict ? "XÁC THỰC BẢO MẬT CAO" : "XÁC THỰC THÀNH CÔNG", 
-                    `Chào mừng trở lại, ${welcomeName}! ${isStrict ? 'Hệ thống đã nhận diện xuyên lớp phụ kiện.' : 'Hệ thống đã mở khóa.'}`
+                    `Chào mừng trở lại, ${welcomeName}! ${isStrict ? 'Hệ thống đã nhận diện xuyên lớp phụ kiện.' : 'Hệ thống đã mở khóa.'}${livenessMsg}`
                 );
                 
                 setTimeout(() => {

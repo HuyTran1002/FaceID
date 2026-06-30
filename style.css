@@ -1161,3 +1161,123 @@ input[type="password"]:focus {
     filter: blur(15px) grayscale(0.5);
     opacity: 0.3;
 }
+
+/* --- ANTI-SPOOFING STYLES v6.0 --- */
+
+/* SPOOFING ALERT: Viền đỏ nhấp nháy khi phát hiện ảnh giả */
+#scan-screen.spoofing-alert .camera-frame-box {
+    border-color: #ff4444 !important;
+    box-shadow: 0 0 40px rgba(255, 68, 68, 0.5) !important;
+    animation: spoofingPulse 0.5s infinite alternate;
+}
+
+#scan-screen.spoofing-alert .hud-target-brackets::before,
+#scan-screen.spoofing-alert .hud-target-brackets::after {
+    border-color: #ff4444 !important;
+}
+
+#scan-screen.spoofing-alert .laser-scanner-line {
+    background: linear-gradient(90deg, transparent, #ff4444, transparent) !important;
+    box-shadow: 0 0 20px #ff4444 !important;
+}
+
+#scan-screen.spoofing-alert #scan-status-msg {
+    color: #ff4444 !important;
+    animation: spoofTextFlash 0.3s infinite alternate;
+}
+
+#scan-screen.spoofing-alert .floating-status-badge {
+    border-color: rgba(255, 68, 68, 0.5) !important;
+    box-shadow: 0 10px 30px rgba(255, 0, 0, 0.3) !important;
+}
+
+#scan-screen.spoofing-alert #scan-progress-bar {
+    background: linear-gradient(90deg, #ff4444, #ff0000) !important;
+    box-shadow: 0 0 15px #ff4444 !important;
+}
+
+@keyframes spoofingPulse {
+    from { 
+        box-shadow: 0 0 30px rgba(255, 68, 68, 0.3);
+        border-color: rgba(255, 68, 68, 0.6);
+    }
+    to { 
+        box-shadow: 0 0 60px rgba(255, 68, 68, 0.7);
+        border-color: #ff4444;
+    }
+}
+
+@keyframes spoofTextFlash {
+    from { opacity: 0.7; }
+    to { opacity: 1; text-shadow: 0 0 15px #ff4444; }
+}
+
+/* BLINK PROMPT: Viền vàng cam khi yêu cầu chớp mắt */
+#scan-screen.blink-prompt .camera-frame-box {
+    border-color: #ffaa00 !important;
+    box-shadow: 0 0 40px rgba(255, 170, 0, 0.3) !important;
+    animation: blinkPromptPulse 1s infinite alternate ease-in-out;
+}
+
+#scan-screen.blink-prompt .hud-target-brackets::before,
+#scan-screen.blink-prompt .hud-target-brackets::after {
+    border-color: #ffaa00 !important;
+}
+
+#scan-screen.blink-prompt .laser-scanner-line {
+    background: linear-gradient(90deg, transparent, #ffaa00, transparent) !important;
+    box-shadow: 0 0 20px #ffaa00 !important;
+}
+
+#scan-screen.blink-prompt #scan-status-msg {
+    color: #ffcc00 !important;
+    animation: blinkTextGlow 1.5s infinite ease-in-out;
+}
+
+#scan-screen.blink-prompt .floating-status-badge {
+    border-color: rgba(255, 170, 0, 0.4) !important;
+}
+
+#scan-screen.blink-prompt #scan-progress-bar {
+    background: linear-gradient(90deg, #ffaa00, #ffcc00) !important;
+    box-shadow: 0 0 15px #ffaa00 !important;
+}
+
+@keyframes blinkPromptPulse {
+    from { 
+        box-shadow: 0 0 25px rgba(255, 170, 0, 0.2);
+    }
+    to { 
+        box-shadow: 0 0 50px rgba(255, 170, 0, 0.5);
+    }
+}
+
+@keyframes blinkTextGlow {
+    0%, 100% { text-shadow: 0 0 5px rgba(255, 204, 0, 0.3); }
+    50% { text-shadow: 0 0 20px rgba(255, 204, 0, 0.8); }
+}
+
+/* LIVENESS OVERLAY HUD */
+.liveness-overlay {
+    position: absolute;
+    left: 50px;
+    bottom: 120px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    z-index: 50;
+    animation: fadeInUp 0.5s ease;
+}
+
+.liveness-overlay .bio-stat {
+    border-left-color: #00ff88;
+    background: rgba(0, 0, 0, 0.8);
+    min-width: 150px;
+    font-size: 11px;
+    padding: 8px 14px;
+}
+
+@keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
