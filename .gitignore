@@ -21,3 +21,5 @@ Thumbs.db
 build/
 python_core/
 *.spec
+models/
+
