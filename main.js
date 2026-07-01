@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, screen, globalShortcut, dialog, Notification, powerSaveBlocker, powerMonitor } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, screen, globalShortcut, Notification, powerSaveBlocker, powerMonitor } = require('electron');
 
 // Chế độ Tương thích Tuyệt đối (v1.1.32) - Khôi phục Camera & Ổn định UI
 // app.commandLine.appendSwitch('disable-gpu');
@@ -344,7 +344,8 @@ const configPath = path.join(app.getPath('userData'), 'config.json');
 let config = {
     adminPass: '8d969eef6ecad3c29a3a629280e686cf0c3f5d5a86aff3ca12020c923adc6c92',
     secretPass: '983637e6f854ca68c8b677a83d7249b0eb23e3e0ff4864115e5899982759e51c',
-    autoLockTimer: 0
+    autoLockTimer: 0,
+    ecoMode: true
 };
 
 function loadConfig() {
@@ -357,6 +358,7 @@ function loadConfig() {
             // Đảm bảo luôn có pass mặc định nếu bị xóa/hỏng (v3.1.3)
             if (!config.adminPass) config.adminPass = '8d969eef6ecad3c29a3a629280e686cf0c3f5d5a86aff3ca12020c923adc6c92';
             if (!config.secretPass) config.secretPass = '983637e6f854ca68c8b677a83d7249b0eb23e3e0ff4864115e5899982759e51c';
+            if (config.ecoMode === undefined) config.ecoMode = true;
         } catch (e) {
             console.error("Failed to load config:", e);
         }
@@ -609,8 +611,13 @@ function lockApp() {
     try { globalShortcut.register('Alt+F4', () => { return false; }); } catch (e) {}
     try { globalShortcut.register('CommandOrControl+W', () => { return false; }); } catch (e) {}
 
-    // Tối ưu năng lượng: Ngăn máy ngủ khi đang khóa (v4.2.0)
-    if (psBlockerId === null) psBlockerId = powerSaveBlocker.start('prevent-display-sleep');
+    // Ngăn máy ngủ/tắt màn hình khi khóa CHỈ khi Eco Mode tắt (Eco Mode bật sẽ cho phép Windows tắt màn hình)
+    if (!config.ecoMode) {
+        if (psBlockerId === null) {
+            psBlockerId = powerSaveBlocker.start('prevent-display-sleep');
+            logToFile(`PowerSaveBlocker started (Always Wake): prevent-display-sleep`);
+        }
+    }
 
     // Tối ưu ưu tiên: Để ở mức thấp khi mới khóa, chỉ nâng lên khi bắt đầu quét (v4.5.0)
     setSidecarPriority('idle');
@@ -638,9 +645,6 @@ function unlockApp() {
     const unlockData = { mode: 'unlock_keys' };
     if (app.isPackaged && pyProcess && !pyProcess.killed) pyProcess.stdin.write(JSON.stringify(unlockData) + '\n');
     else if (pyshell) pyshell.send(unlockData);
-
-    // Mở khóa các phím thoát hiểm (v4.4.0 - KHÔNG tắt Watchdog để duy trì bảo vệ chạy ngầm)
-    // manageKeyGuard(false); // <--- BỎ DÒNG NÀY
     
     try { globalShortcut.unregister('Alt+Tab'); } catch (e) {}
     try { globalShortcut.unregister('CommandOrControl+Esc'); } catch (e) {}
@@ -779,6 +783,28 @@ app.whenReady().then(() => {
         if (loopCount > 20) clearInterval(hardLockInterval); // Sau 10s (20 * 500ms) thì dừng loop
     }, 500); // 500ms cho mượt
 
+    // --- ĐỒNG BỘ POWERMONITOR CHO ECO MODE (v6.2.0) ---
+    powerMonitor.on('display-sleep', () => {
+        logToFile('PowerMonitor: Display is sleeping');
+        if (config.ecoMode && isLocked && mainWindow && !mainWindow.isDestroyed()) {
+            logToFile('Eco Mode: Hiding lock window during display sleep to allow system sleep');
+            mainWindow.hide();
+            mainWindow.setKiosk(false);
+            mainWindow.setAlwaysOnTop(false);
+        }
+    });
+
+    powerMonitor.on('display-wakeup', () => {
+        logToFile('PowerMonitor: Display woke up');
+        if (isLocked && mainWindow && !mainWindow.isDestroyed()) {
+            logToFile('Restoring lock screen window properties');
+            mainWindow.show();
+            mainWindow.setKiosk(true);
+            mainWindow.setAlwaysOnTop(true, 'screen-saver');
+            mainWindow.focus();
+        }
+    });
+
     // (Phím tắt Master đã được di chuyển lên đầu block whenReady v4.4.2)
 });
 
@@ -796,18 +822,50 @@ ipcMain.on('update-config', (event, newConfig) => {
     
     config = { ...config, ...newConfig };
     saveConfig();
-    logToFile(`Config updated: AutoLock=${config.autoLockTimer}s`);
+    logToFile(`Config updated: AutoLock=${config.autoLockTimer}s, EcoMode=${config.ecoMode}`);
+    
+    // Nếu trạng thái khóa đang hoạt động, cập nhật lại PowerSaveBlocker để áp dụng ngay lập tức
+    if (isLocked) {
+        if (psBlockerId !== null) {
+            powerSaveBlocker.stop(psBlockerId);
+            psBlockerId = null;
+        }
+        if (!config.ecoMode) {
+            psBlockerId = powerSaveBlocker.start('prevent-display-sleep');
+            logToFile(`PowerSaveBlocker updated (Always Wake): prevent-display-sleep`);
+        } else {
+            logToFile(`PowerSaveBlocker released due to Eco Mode activation`);
+        }
+    }
+    
     event.reply('config-updated', { success: true });
 });
 
 // --- IPC ĐIỀU PHỐI ƯU TIÊN AI (v4.5.0) ---
 ipcMain.on('start-scanning', () => {
     setSidecarPriority('high');
+    if (psBlockerId === null) {
+        psBlockerId = powerSaveBlocker.start('prevent-display-sleep');
+        logToFile(`PowerSaveBlocker started (Scanning Active): prevent-display-sleep`);
+    }
 });
 
 ipcMain.on('stop-scanning', () => {
-    if (isLocked) setSidecarPriority('idle');
-    else setSidecarPriority('normal');
+    if (isLocked) {
+        setSidecarPriority('idle');
+        if (config.ecoMode && psBlockerId !== null) {
+            powerSaveBlocker.stop(psBlockerId);
+            psBlockerId = null;
+            logToFile(`PowerSaveBlocker stopped (Scanning Idle & Eco Mode Active)`);
+        }
+    } else {
+        setSidecarPriority('normal');
+        if (psBlockerId !== null) {
+            powerSaveBlocker.stop(psBlockerId);
+            psBlockerId = null;
+            logToFile(`PowerSaveBlocker stopped (Unlocked)`);
+        }
+    }
 });
 
 ipcMain.on('update-settings', (event, { newAdminPass, newSecretPass }) => {

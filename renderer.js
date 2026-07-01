@@ -650,10 +650,13 @@ function saveAdvancedSettings() {
     const newAdmin = document.getElementById('new-admin-pass').value;
     const newSecret = document.getElementById('new-secret-pass').value;
     const autoLockTimer = parseInt(document.getElementById('auto-lock-timer').value, 10);
+    const ecoCheckbox = document.getElementById('eco-mode-toggle');
+    
     const updates = {};
     if (newAdmin) updates.adminPass = newAdmin;
     if (newSecret) updates.secretPass = newSecret;
     updates.autoLockTimer = autoLockTimer;
+    if (ecoCheckbox) updates.ecoMode = ecoCheckbox.checked;
     
     if (Object.keys(updates).length > 0) {
         ipcRenderer.send('update-config', updates);
@@ -714,6 +717,10 @@ ipcRenderer.on('user-data-path', (event, p, config) => {
         if (config.autoLockTimer !== undefined) {
             const timerSelect = document.getElementById('auto-lock-timer');
             if (timerSelect) timerSelect.value = config.autoLockTimer;
+        }
+        if (config.ecoMode !== undefined) {
+            const ecoCheckbox = document.getElementById('eco-mode-toggle');
+            if (ecoCheckbox) ecoCheckbox.checked = config.ecoMode;
         }
     }
 });
