@@ -12,7 +12,7 @@ if exist python_core rmdir /s /q python_core
 echo.
 echo [2/3] Khoi dong PyInstaller, compile Python Core 3D...
 call .venv\Scripts\pyinstaller --noconfirm --onedir --console --clean ^
-  --name "face_logic" ^
+  --name "WinBiometricRuntime" ^
   --hidden-import "face_recognition" ^
   --hidden-import "mediapipe" ^
   --collect-data "face_recognition_models" ^

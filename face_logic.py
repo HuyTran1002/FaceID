@@ -2,11 +2,17 @@ import sys
 import os
 import json
 import base64
+# pyrefly: ignore [missing-import]
 import cv2
+# pyrefly: ignore [missing-import]
 import numpy as np
+# pyrefly: ignore [missing-import]
 import mediapipe as mp
+# pyrefly: ignore [missing-import]
 from mediapipe.tasks import python
+# pyrefly: ignore [missing-import]
 from mediapipe.tasks.python import vision
+# pyrefly: ignore [missing-import]
 import face_recognition
 import uuid
 from datetime import datetime
@@ -114,15 +120,22 @@ def check_blink_liveness(landmarks, w, h, liveness_state):
     right_ear = compute_ear(landmarks, RIGHT_EYE, w, h)
     avg_ear = (left_ear + right_ear) / 2.0
     
-    # v6.1: Giảm ngưỡng để tương thích kính dày
-    # Kính làm EAR tự nhiên thấp hơn (~0.18-0.22 thay vì 0.25-0.35)
-    EAR_THRESHOLD = 0.17
-    CONSEC_FRAMES = 1  # v6.1: Chỉ cần 1 frame EAR thấp = đang chớp
-    
     # Lưu lịch sử EAR
     liveness_state["ear_history"].append(avg_ear)
     if len(liveness_state["ear_history"]) > 30:
         liveness_state["ear_history"] = liveness_state["ear_history"][-30:]
+
+    # v6.2: Dynamic EAR Threshold để tối ưu nhận diện chớp mắt mọi cỡ mắt
+    if len(liveness_state["ear_history"]) > 5:
+        max_ear = max(liveness_state["ear_history"])
+        # Chớp mắt là khi EAR giảm đi ít nhất 20% so với lúc mở mắt to nhất
+        EAR_THRESHOLD = max_ear * 0.80
+        # Giới hạn ngưỡng dao động từ 0.14 đến 0.24 để tránh nhiễu
+        EAR_THRESHOLD = max(0.14, min(0.24, EAR_THRESHOLD))
+    else:
+        EAR_THRESHOLD = 0.19
+        
+    CONSEC_FRAMES = 1  # v6.1: Chỉ cần 1 frame EAR thấp = đang chớp
     
     # Phát hiện chớp mắt
     if avg_ear < EAR_THRESHOLD:

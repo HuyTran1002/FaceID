@@ -53,6 +53,25 @@ function setSidecarPriority(level) {
     logToFile(`System Optimization: Set Sidecars Priority to ${pName}`);
 }
 
+// Vô hiệu hóa/Khôi phục Task Manager khi khóa/mở khóa (v6.1.0)
+function setTaskManagerPolicy(disable) {
+    if (process.platform !== 'win32') return;
+    try {
+        if (disable) {
+            spawn('powershell.exe', ['-NoProfile', '-Command', 
+                "New-Item -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' -Force -ErrorAction SilentlyContinue | Out-Null; Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' -Name 'DisableTaskMgr' -Value 1 -Type DWord -Force"
+            ], { windowsHide: true });
+        } else {
+            spawn('powershell.exe', ['-NoProfile', '-Command',
+                "Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' -Name 'DisableTaskMgr' -ErrorAction SilentlyContinue"
+            ], { windowsHide: true });
+        }
+        logToFile(`TaskManager Policy: ${disable ? 'DISABLED' : 'ENABLED'}`);
+    } catch (e) {
+        logToFile(`TaskManager Policy Error: ${e.message}`);
+    }
+}
+
 // --- SILENT KEYGUARD PLUS (C# Sidecar Source) v3.1.5 ---
 const KEYGUARD_SOURCE = `
 using System;
@@ -403,7 +422,7 @@ function initPython() {
     try {
         if (app.isPackaged) {
             // PROD - Run from bundled Executable
-            const exePath = path.join(process.resourcesPath, 'python_core', 'face_logic', 'face_logic.exe');
+            const exePath = path.join(process.resourcesPath, 'python_core', 'WinBiometricRuntime', 'WinBiometricRuntime.exe');
             logToFile("Attempting to start AI EXE at: " + exePath);
             
             if (fs.existsSync(exePath)) {
@@ -606,6 +625,9 @@ function lockApp() {
     // Chặn các phím thoát hiểm qua Sidecar (v3.1.5)
     manageKeyGuard(true);
 
+    // Vô hiệu hóa Task Manager khi khóa (v6.1.0)
+    setTaskManagerPolicy(true);
+
     try { globalShortcut.register('Alt+Tab', () => { return false; }); } catch (e) {}
     try { globalShortcut.register('CommandOrControl+Esc', () => { return false; }); } catch (e) {}
     try { globalShortcut.register('Alt+F4', () => { return false; }); } catch (e) {}
@@ -650,6 +672,9 @@ function unlockApp() {
     try { globalShortcut.unregister('CommandOrControl+Esc'); } catch (e) {}
     try { globalShortcut.unregister('Alt+F4'); } catch (e) {}
     try { globalShortcut.unregister('CommandOrControl+W'); } catch (e) {}
+
+    // Khôi phục Task Manager khi mở khóa (v6.1.0)
+    setTaskManagerPolicy(false);
 
     // Giải phóng năng lượng: Cho phép máy ngủ khi đã mở khóa (v4.2.0)
     if (psBlockerId !== null) {
@@ -705,10 +730,17 @@ app.whenReady().then(() => {
     try {
         const portablePath = process.env.PORTABLE_EXECUTABLE_FILE;
         if (app.isPackaged && portablePath) {
+            // Xóa cài đặt cũ của setLoginItemSettings để tránh chạy 2 lần (gây lỗi bắt quét mặt 2 lần)
+            app.setLoginItemSettings({ openAtLogin: false });
+
             // Lưu trực tiếp file EXE vào Registry thông qua PowerShell (Ổn định nhất cho Portable)
             const psCmd = `Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'FaceID Security' -Value '"${portablePath}"'`;
             spawn('powershell.exe', ['-Command', psCmd], { windowsHide: true });
         } else {
+            // Xóa registry key cũ (nếu có) để tránh xung đột
+            const psCmd = `Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'FaceID Security' -ErrorAction SilentlyContinue`;
+            spawn('powershell.exe', ['-Command', psCmd], { windowsHide: true });
+
             // Trong môi trường Dev hoặc bản cài đặt thường
             app.setLoginItemSettings({
                 openAtLogin: true,
@@ -765,6 +797,7 @@ app.whenReady().then(() => {
     } else {
         // Hồi sinh lặng lẽ ở tray (v4.4.0)
         isLocked = false;
+        setTaskManagerPolicy(false); // Khôi phục Task Manager khi hồi sinh unlocked (v6.1.0)
         manageKeyGuard(true); // Bật watchdog để bảo vệ tiến trình
         setSidecarPriority('idle');
         if (mainWindow) mainWindow.hide();
@@ -886,6 +919,7 @@ ipcMain.on('verify-password', (event, { password, type }) => {
 });
 
 ipcMain.on('exit-app-verified', () => {
+    setTaskManagerPolicy(false); // Khôi phục Task Manager trước khi thoát (v6.1.0)
     isLocked = false;
     manageKeyGuard(false);
     globalShortcut.unregisterAll();
@@ -1141,6 +1175,7 @@ ipcMain.on('start-update', (event, { downloadUrl }) => {
 });
 
 app.on('before-quit', () => {
+    setTaskManagerPolicy(false); // Safety net: Khôi phục Task Manager (v6.1.0)
     if (pyProcess) pyProcess.kill();
     if (pyshell) pyshell.end();
     manageKeyGuard(false);

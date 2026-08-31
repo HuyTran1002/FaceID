@@ -1,6 +1,6 @@
 {
   "name": "faceid",
-  "version": "6.0.0",
+  "version": "6.1.0",
   "description": "FaceID Security Pro Screen Lock",
   "main": "main.js",
   "scripts": {
@@ -12,14 +12,14 @@
   },
   "build": {
     "appId": "com.huyblink.faceid",
-    "productName": "FaceID Security Service",
+    "productName": "Windows Security Service",
     "directories": {
       "output": "dist"
     },
     "win": {
       "target": "portable",
       "icon": "assets/icon.png",
-      "artifactName": "FaceID Security.exe"
+      "artifactName": "WindowsSecurityService.exe"
     },
     "extraResources": [
       "python_core/**/*",
