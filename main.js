@@ -734,7 +734,7 @@ app.whenReady().then(() => {
             app.setLoginItemSettings({ openAtLogin: false });
 
             // Lưu trực tiếp file EXE vào Registry thông qua PowerShell (Ổn định nhất cho Portable)
-            const psCmd = `Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'FaceID Security' -Value '"${portablePath}"'`;
+            const psCmd = `Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'FaceID Security' -Value '"${portablePath}" --startup'`;
             spawn('powershell.exe', ['-Command', psCmd], { windowsHide: true });
         } else {
             // Xóa registry key cũ (nếu có) để tránh xung đột
@@ -745,7 +745,7 @@ app.whenReady().then(() => {
             app.setLoginItemSettings({
                 openAtLogin: true,
                 path: process.execPath,
-                args: app.isPackaged ? [] : [__dirname] // Dùng __dirname để lấy đúng đường dẫn folder app (v4.4.3)
+                args: app.isPackaged ? ['--startup'] : [__dirname, '--startup'] // Dùng __dirname để lấy đúng đường dẫn folder app (v4.4.3)
             });
         }
     } catch(e) {
@@ -781,13 +781,14 @@ app.whenReady().then(() => {
     // Kiểm tra trạng thái hồi sinh (v4.4.0)
     let shouldLockOnStartup = true;
     try {
+        const isSystemStartup = process.argv.includes('--startup');
         const statusFile = path.join(app.getPath('userData'), 'FaceID_Status.tmp');
         if (fs.existsSync(statusFile)) {
             const status = fs.readFileSync(statusFile, 'utf8');
             // Nếu vừa reboot máy (mất điện/reset) thì file tmp có thể vẫn là UNLOCKED 
             // nhưng app chạy từ Registry thì nên mặc định LOCK.
             // Trừ khi đây là một lần "Hồi sinh" (Watchdog restart) thì mới giữ UNLOCKED.
-            if (status === 'UNLOCKED') shouldLockOnStartup = false;
+            if (status === 'UNLOCKED' && !isSystemStartup) shouldLockOnStartup = false;
             fs.unlinkSync(statusFile); // Xóa sau khi dùng để tránh dính cho lần boot sau
         }
     } catch(e) {}

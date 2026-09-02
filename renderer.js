@@ -79,16 +79,27 @@ function updateClock() {
     if (clockDate) clockDate.innerText = now.toLocaleDateString('vi-VN', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' });
 }
 
-async function initCamera() {
-    try {
-        if (cameraStream) stopCamera();
-        cameraStream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720, frameRate: 24 } });
-        video.srcObject = cameraStream;
-    } catch (err) { 
-        console.error("CAMERA ERROR", err);
-        updateUIStatus("LỖI TRUY CẬP CAMERA!");
-        showNotification("Lỗi Camera", "Không thể khởi tạo camera. Vui lòng kiểm tra cáp hoặc quyền truy cập.\n\nChi tiết: " + err.message);
-    }
+function initCamera(retries = 10, delayMs = 1500) {
+    return new Promise(async (resolve, reject) => {
+        try {
+            if (cameraStream) stopCamera();
+            cameraStream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720, frameRate: 24 } });
+            video.srcObject = cameraStream;
+            resolve();
+        } catch (err) { 
+            console.error("CAMERA ERROR", err);
+            if (retries > 0 && isProcessing) {
+                updateUIStatus(`ĐANG THỬ LẠI CAMERA (${retries})...`);
+                setTimeout(() => {
+                    initCamera(retries - 1, delayMs).then(resolve).catch(reject);
+                }, delayMs);
+            } else {
+                updateUIStatus("LỖI TRUY CẬP CAMERA!");
+                showNotification("Lỗi Camera", "Không thể khởi tạo camera. Vui lòng kiểm tra cáp hoặc quyền truy cập (Windows Hello có thể đang chiếm dụng).\n\nChi tiết: " + err.message);
+                reject(err);
+            }
+        }
+    });
 }
 
 function stopCamera() {
@@ -260,8 +271,13 @@ async function startScan(mode, faceName = "") {
     lockScreen.classList.remove('active');
     updateUIStatus(isRegistering ? "KIỂM TRA LUỒNG AI..." : "ĐANG KHỞI TẠO AI...");
     
-    await initCamera(); 
-    triggerNextFrame(800); 
+    try {
+        await initCamera();
+        if (isProcessing) triggerNextFrame(800); 
+    } catch (e) {
+        stopScan();
+        return;
+    }
 
     // --- OPTIMIZATION v4.5.0 ---
     ipcRenderer.send('start-scanning');
