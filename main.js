@@ -24,6 +24,8 @@ let isLocked = true;
 let pythonExit = false;
 let keyGuardProcess = null;
 let psBlockerId = null; // Quản lý ID Tiết kiệm năng lượng (v4.2.0)
+let isAiReady = false; // Trạng thái AI Engine đã nạp xong chưa (v6.3.1)
+let currentSidecarPriority = null; // Cache mức ưu tiên hiện tại
 
 // --- TRÌNH XỬ LÝ LỖI TOÀN CỤC (v4.2.6) ---
 process.on('uncaughtException', (err) => {
@@ -33,11 +35,22 @@ process.on('unhandledRejection', (reason) => {
     logToFile(`CRITICAL ERROR (Unhandled): ${reason}`);
 });
 
-// Helper: Điều phối mức ưu tiên xử lý (v4.2.0)
+// Helper: Điều phối mức ưu tiên xử lý (v4.2.0 + v6.3.1 Startup Guard)
 function setSidecarPriority(level) {
     if (process.platform !== 'win32') return;
+
+    // BẢO VỆ KHỞI ĐỘNG: Nếu AI chưa nạp xong (chưa READY), TUYỆT ĐỐI không hạ xuống idle
+    // để tránh bị Windows Scheduler bỏ đói CPU lúc vừa bật máy!
+    if (level === 'idle' && !isAiReady) {
+        level = 'normal';
+    }
+
     const priorityMap = { 'idle': 'Idle', 'normal': 'Normal', 'high': 'High' };
     const pName = priorityMap[level] || 'Normal';
+    
+    // Tránh gọi PowerShell lặp lại nếu priority không thay đổi
+    if (currentSidecarPriority === pName) return;
+    currentSidecarPriority = pName;
     
     // Áp dụng cho Python
     const aiPid = (app.isPackaged && pyProcess) ? pyProcess.pid : (pyshell && pyshell.childProcess ? pyshell.childProcess.pid : null);
@@ -221,6 +234,12 @@ function compileKeyGuard() {
     // Đổi tên ngụy trang thành tiến trình giống hệ thống (v4.3.0)
     const exePath = path.join(tempPath, 'WinSecurityHealthGuard.exe'); 
 
+    // TỐI ƯU KHỞI ĐỘNG (v6.3.1): Bỏ qua biên dịch nếu file thực thi đã tồn tại
+    if (fs.existsSync(exePath)) {
+        logToFile("KeyGuard binary already exists. Skipping compilation.");
+        return;
+    }
+
     fs.writeFileSync(sourcePath, KEYGUARD_SOURCE);
     
     const cscPath = 'C:\\\\Windows\\\\Microsoft.NET\\\\Framework64\\\\v4.0.30319\\\\csc.exe';
@@ -240,6 +259,12 @@ function compileUpdater() {
     const userDataPath = app.getPath('userData');
     const exePath = path.join(userDataPath, 'FaceID_Updater.exe'); 
     
+    // TỐI ƯU KHỞI ĐỘNG (v6.3.1): Bỏ qua biên dịch nếu file thực thi đã tồn tại
+    if (fs.existsSync(exePath)) {
+        logToFile("FaceID Updater binary already exists. Skipping compilation.");
+        return;
+    }
+
     // Đường dẫn CSC.EXE tiêu chuẩn trên Windows
     const cscPath = 'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe';
     
@@ -443,7 +468,14 @@ function initPython() {
                         logToFile("AI RAW: " + line); // Ghi lại mọi thứ v2.9.0
                         try {
                             const result = JSON.parse(line);
-                            if (result.status === "READY") logToFile("AI ENGINE SIGNALED READY.");
+                            if (result.status === "READY") {
+                                isAiReady = true;
+                                logToFile("AI ENGINE SIGNALED READY.");
+                                // Sau khi AI nạp xong, nếu đang khóa và không quét thì mới hạ về idle
+                                if (isLocked) {
+                                    setSidecarPriority('idle');
+                                }
+                            }
                             if (mainWindow) mainWindow.webContents.send('python-result', result);
                         } catch (e) {
                             logToFile('AI JSON PARSE ERR: ' + line);
@@ -456,6 +488,8 @@ function initPython() {
                 });
 
                 pyProcess.on('exit', (code) => {
+                    isAiReady = false;
+                    currentSidecarPriority = null;
                     if (isLocked && !pythonExit) {
                         logToFile(`AI ENGINE KILLED (Code: ${code})! Restarting AI...`);
                         setTimeout(initPython, 1000); // Tự động hồi sinh AI (v4.3.1)
@@ -484,6 +518,13 @@ function initPython() {
         
         pyshell.on('message', (message) => {
             console.log('[AI OUTPUT]:', message); // LOG TO TERMINAL v2.1.3
+            if (message && message.status === "READY") {
+                isAiReady = true;
+                logToFile("AI ENGINE SIGNALED READY (DEV).");
+                if (isLocked) {
+                    setSidecarPriority('idle');
+                }
+            }
             if (mainWindow) mainWindow.webContents.send('python-result', message);
         });
         pyshell.on('stderr', (stderr) => console.log('AI DEV DEBUG:', stderr));
@@ -641,8 +682,9 @@ function lockApp() {
         }
     }
 
-    // Tối ưu ưu tiên: Để ở mức thấp khi mới khóa, chỉ nâng lên khi bắt đầu quét (v4.5.0)
-    setSidecarPriority('idle');
+    // Tối ưu ưu tiên (v6.3.1): Chỉ hạ về 'idle' NẾU AI đã nạp xong (READY).
+    // Nếu đang boot, giữ ở 'normal' để Windows cấp đủ CPU cho AI nạp nhanh nhất!
+    setSidecarPriority(isAiReady ? 'idle' : 'normal');
 
     mainWindow.webContents.send('app-locked');
 }

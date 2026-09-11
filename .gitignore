@@ -22,4 +22,5 @@ build/
 python_core/
 *.spec
 models/
+*.exe
 

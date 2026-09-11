@@ -13,7 +13,17 @@ from mediapipe.tasks import python
 # pyrefly: ignore [missing-import]
 from mediapipe.tasks.python import vision
 # pyrefly: ignore [missing-import]
-import face_recognition
+# Lazy loading face_recognition to achieve sub-second startup
+_face_recognition = None
+def get_face_recognition():
+    global _face_recognition
+    if _face_recognition is None:
+        log_status("TRACE", "Lazy loading face_recognition engine...")
+        import face_recognition as fr
+        _face_recognition = fr
+        log_status("TRACE", "face_recognition engine loaded.")
+    return _face_recognition
+
 import uuid
 from datetime import datetime
 import random
@@ -494,8 +504,8 @@ while True:
         roi_stabilized = get_stabilized_img(roi)
         rgb_roi = cv2.cvtColor(roi_stabilized, cv2.COLOR_BGR2RGB)
         
-        # Encoding trên vùng ROI đã được làm sạch
-        encs = face_recognition.face_encodings(rgb_roi, [(0, rgb_roi.shape[1], rgb_roi.shape[0], 0)])
+        # Encoding trên vùng ROI đã được làm sạch (Lazy Loaded)
+        encs = get_face_recognition().face_encodings(rgb_roi, [(0, rgb_roi.shape[1], rgb_roi.shape[0], 0)])
         
         if not encs:
             scan_state["verify_buffer"] = []
@@ -512,7 +522,7 @@ while True:
                 print(json.dumps({"success": True, "status": "sculpting", "features": features, "pitch": pitch, "cleanroom_mode": mouth_occluded}), flush=True); continue
             known_encs = [np.array(f['model']) for f in reg]; names = [f['name'] for f in reg]
             
-            dists = face_recognition.face_distance(known_encs, cur_enc)
+            dists = get_face_recognition().face_distance(known_encs, cur_enc)
             min_dist = min(dists) if len(dists) > 0 else 1.0
             
             # --- ANTI-SPOOFING CHECK v6.0 ---
@@ -653,7 +663,7 @@ while True:
             reg = get_faces(user_data_path)
             if reg:
                 known_encs = [np.array(f['model']) for f in reg]
-                dists = face_recognition.face_distance(known_encs, cur_enc)
+                dists = get_face_recognition().face_distance(known_encs, cur_enc)
                 # Chặn nếu quá giống < 0.30 hoặc cho phép nếu là biến thể mới 0.30 - 0.40
                 if len(dists) > 0 and min(dists) < 0.30: 
                     match_idx = np.argmin(dists)

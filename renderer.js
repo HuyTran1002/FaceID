@@ -269,11 +269,11 @@ async function startScan(mode, faceName = "") {
     scanScreen.classList.add(isRegistering ? 'register-mode' : 'detect-mode');
     
     lockScreen.classList.remove('active');
-    updateUIStatus(isRegistering ? "KIỂM TRA LUỒNG AI..." : "ĐANG KHỞI TẠO AI...");
+    updateUIStatus(isRegistering ? "KIỂM TRA LUỒNG AI..." : (pythonReady ? "ĐANG QUÉT KHUÔN MẶT..." : "ĐANG KHỞI TẠO AI..."));
     
     try {
         await initCamera();
-        if (isProcessing) triggerNextFrame(800); 
+        if (isProcessing && pythonReady) triggerNextFrame(100); 
     } catch (e) {
         stopScan();
         return;
@@ -418,14 +418,17 @@ function sendFrameToPython() {
 
 ipcRenderer.on('python-result', (event, result) => {
     pythonProcessing = false;
-    if (isProcessing) triggerNextFrame(); // Dùng Dynamic Delay mặc định (v4.2.0)
-
-    // console.log("AI DEBUG RESULT:", result); // Bật để kiểm tra dữ liệu
 
     if (result.status === "READY") {
-        updateUIStatus("AI ĐÃ SẴN SÀNG");
         pythonReady = true;
+        updateUIStatus(isRegistering ? "KIỂM TRA LUỒNG AI..." : "ĐANG QUÉT KHUÔN MẶT...");
+        if (isProcessing) {
+            triggerNextFrame(50); // Bắt đầu gửi frame ngay lập tức khi AI sẵn sàng!
+        }
+        return;
     }
+
+    if (isProcessing) triggerNextFrame(); // Dùng Dynamic Delay mặc định (v4.2.0)
     
     if (result.success) {
         if (result.features) drawFaceSketch(result);
