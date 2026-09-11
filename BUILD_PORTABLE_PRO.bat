@@ -17,10 +17,6 @@ call .venv\Scripts\pyinstaller --noconfirm --onedir --console --clean ^
   --hidden-import "mediapipe" ^
   --collect-data "face_recognition_models" ^
   --collect-all "mediapipe" ^
-  --exclude-module "matplotlib" ^
-  --exclude-module "PIL" ^
-  --exclude-module "tkinter" ^
-  --exclude-module "sounddevice" ^
   --noupx ^
   --distpath "python_core" ^
   face_logic.py
