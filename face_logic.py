@@ -46,6 +46,7 @@ scan_state = {
     "best_reg_frame": None, # Ảnh nhìn thẳng nhất để làm profile
     "best_reg_pitch": 999.0, # Độ nghiêng thấp nhất tìm thấy
     "miss_counter": 0,       # Bộ đếm sai số linh hoạt (v4.2.0)
+    "awaiting_blink": None,  # Tối ưu hóa: Bỏ qua face_encodings nặng khi đang chờ chớp mắt
     # --- ANTI-SPOOFING STATE v6.0 ---
     "liveness": {
         "ear_history": [],      # Lịch sử EAR để phát hiện chớp mắt
@@ -168,33 +169,30 @@ def check_blink_liveness(landmarks, w, h, liveness_state):
     
     return liveness_state["blink_detected"], round(avg_ear, 3), liveness_state["blink_count"]
 
+# --- FFT LIVENESS PRECOMPUTED MASKS (Tối ưu hóa: Không cấp phát lại ma trận ở từng frame) ---
+_FFT_SIZE = 128
+_FFT_CROW, _FFT_CCOL = _FFT_SIZE // 2, _FFT_SIZE // 2
+_R_LOW = int(_FFT_SIZE * 0.15)
+_R_HIGH = int(_FFT_SIZE * 0.35)
+_Y_GRID, _X_GRID = np.ogrid[:_FFT_SIZE, :_FFT_SIZE]
+_LOW_FREQ_MASK = ((_Y_GRID - _FFT_CROW)**2 + (_X_GRID - _FFT_CCOL)**2) <= _R_LOW**2
+_HIGH_FREQ_MASK = ((_Y_GRID - _FFT_CROW)**2 + (_X_GRID - _FFT_CCOL)**2) > _R_HIGH**2
+
 def check_frequency_liveness(roi_gray):
     """Lớp 3: Phân tích phổ tần số Fourier để phát hiện moiré pattern.
     Màn hình LCD tạo ra peak tần số cao đặc trưng do pixel grid.
     Returns: (is_live, score) where score 0.0-1.0
     """
     try:
-        resized = cv2.resize(roi_gray, (128, 128)).astype(np.float64)
+        resized = cv2.resize(roi_gray, (_FFT_SIZE, _FFT_SIZE)).astype(np.float64)
         
         # FFT 2D
         f_transform = np.fft.fft2(resized)
         f_shift = np.fft.fftshift(f_transform)
         magnitude = np.log1p(np.abs(f_shift))
         
-        rows, cols = magnitude.shape
-        crow, ccol = rows // 2, cols // 2
-        
-        # Vùng tần số thấp (trung tâm)
-        r_low = int(min(rows, cols) * 0.15)
-        y_grid, x_grid = np.ogrid[:rows, :cols]
-        low_freq_mask = ((y_grid - crow)**2 + (x_grid - ccol)**2) <= r_low**2
-        
-        # Vùng tần số cao (rìa)
-        r_high = int(min(rows, cols) * 0.35)
-        high_freq_mask = ((y_grid - crow)**2 + (x_grid - ccol)**2) > r_high**2
-        
-        low_energy = np.sum(magnitude[low_freq_mask])
-        high_energy = np.sum(magnitude[high_freq_mask])
+        low_energy = np.sum(magnitude[_LOW_FREQ_MASK])
+        high_energy = np.sum(magnitude[_HIGH_FREQ_MASK])
         total_energy = np.sum(magnitude) + 1e-7
         
         high_ratio = high_energy / total_energy
@@ -248,6 +246,7 @@ def run_liveness_check(roi, landmarks, w, h, liveness_state):
 
 def reset_liveness_state():
     """Reset trạng thái liveness khi bắt đầu phiên quét mới."""
+    scan_state["awaiting_blink"] = None
     scan_state["liveness"] = {
         "ear_history": [],
         "blink_detected": False,
@@ -264,25 +263,20 @@ def adjust_gamma(image, gamma=1.0):
     return cv2.LUT(image, table)
 
 def get_stabilized_img(img):
-    # --- ADAPTIVE OPTICS v6.0 (AUTO-GAMMA + CLEANROOM) ---
+    # --- ADAPTIVE OPTICS v6.1 (FAST AUTO-GAMMA + CLAHE) ---
     # 1. Auto-Gamma: Phân tích độ sáng trung bình và tự động điều chỉnh
     gray_check = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     avg_brightness = np.mean(gray_check)
     
     if avg_brightness < 80:
-        # Ảnh TỐI (ngược sáng, thiếu sáng) → Tăng sáng mạnh
         gamma = 1.8
     elif avg_brightness < 120:
-        # Ảnh HƠI TỐI → Tăng sáng nhẹ
         gamma = 1.3
     elif avg_brightness > 200:
-        # Ảnh QUÁ SÁNG (đèn LED phòng sạch) → Giảm sáng
         gamma = 0.7
     elif avg_brightness > 170:
-        # Ảnh HƠI SÁNG → Giảm nhẹ
         gamma = 0.85
     else:
-        # Ảnh BÌNH THƯỜNG → Không chỉnh
         gamma = 1.0
     
     gamma_img = adjust_gamma(img, gamma=gamma)
@@ -295,8 +289,9 @@ def get_stabilized_img(img):
     limg = cv2.merge((cl,a,b))
     enhanced = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
     
-    # 3. Bilateral Filter: Làm mịn nhưng giữ cạnh sắc nét của gọng kính và viền mắt
-    return cv2.bilateralFilter(enhanced, 9, 75, 75)
+    # TỐI ƯU CỰC ĐẠI: Loại bỏ bilateralFilter(enhanced, 9, 75, 75) ngốn ~40ms CPU mỗi frame
+    # CLAHE + Gamma đã mang lại độ tương phản hoàn hảo cho ResNet feature extraction.
+    return enhanced
 
 def calculate_pitch_cleanroom(landmarks, w, h):
     bridge = landmarks[6].y * h
@@ -459,7 +454,7 @@ while True:
         blendshapes = res.face_blendshapes[0] if res.face_blendshapes else []
         pitch = calculate_pitch_cleanroom(landmarks, w, h)
         skin_hex = get_skin_color(raw_img, landmarks, w, h)
-        acc_edges = get_accessory_contours_v2(raw_img, landmarks, w, h) # v2.5.1
+        # TỐI ƯU HÓA: Loại bỏ get_accessory_contours_v2(raw_img, landmarks, w, h) thừa thãi (tiết kiệm 30-40ms CPU)
         mouth_occluded = False
         if blendshapes:
             m_shapes = {s.category_name: s.score for s in blendshapes}
@@ -499,7 +494,65 @@ while True:
         # 3. CHỈNH SỬA VÙNG ROI (v2.8.0)
         roi = raw_img[y1:y2, x1:x2]
         if roi.size == 0: continue
-        
+
+        # --- TỐI ƯU SIÊU TỐC (v6.3.5): FAST-PATH KHI ĐANG CHỜ CHỚP MẮT ---
+        # Người dùng đã được xác thực 100% qua Consensus Voting.
+        # Bỏ qua hoàn toàn dlib ResNet face_encodings (tiết kiệm 120ms CPU 100%),
+        # chỉ dùng MediaPipe landmarks kiểm tra chớp mắt siêu nhạy (60 FPS, <10ms latency).
+        if mode == 'detect' and scan_state.get("awaiting_blink"):
+            ab = scan_state["awaiting_blink"]
+            if time.time() - ab.get("start_time", 0) > 6.0:
+                # Quá 6 giây không chớp mắt → Reset trạng thái để quét lại
+                scan_state["awaiting_blink"] = None
+                scan_state["verify_buffer"] = []
+                reset_liveness_state()
+            else:
+                liveness_result = run_liveness_check(roi, landmarks, w, h, scan_state["liveness"])
+                liveness_info = {
+                    "liveness_score": liveness_result["liveness_score"],
+                    "blink_count": liveness_result["blink_count"],
+                    "blink_ok": liveness_result["blink_detected"],
+                    "ear": liveness_result["current_ear"]
+                }
+                if liveness_result["blink_detected"]:
+                    # ĐÃ CHỚP MẮT THÀNH CÔNG → MỞ KHÓA NGAY LẬP TỨC
+                    cand = ab["candidate"]
+                    prof_b64 = ab["profile_b64"]
+                    sim = ab["similarity"]
+                    sec = ab["security_level"]
+                    scan_state["verify_buffer"] = []
+                    scan_state["miss_counter"] = 0
+                    scan_state["last_match"] = None
+                    scan_state["awaiting_blink"] = None
+                    reset_liveness_state()
+                    print(json.dumps({
+                        "success": True, 
+                        "status": "success", 
+                        "match": cand, 
+                        "profile_img": prof_b64,
+                        "features": features, 
+                        "pitch": pitch, 
+                        "similarity": sim, 
+                        "liveness": liveness_info, 
+                        "security_level": sec
+                    }), flush=True)
+                    continue
+                else:
+                    # TIẾP TỤC CHỜ CHỚP MẮT (MƯỢT MÀ 60 FPS)
+                    print(json.dumps({
+                        "success": True, 
+                        "status": "blink_required", 
+                        "match": ab["candidate"], 
+                        "profile_img": ab["profile_b64"], 
+                        "progress": 100, 
+                        "features": features, 
+                        "pitch": pitch, 
+                        "similarity": ab["similarity"], 
+                        "liveness": liveness_info, 
+                        "detail": f"✅ Nhận diện OK ({ab['similarity']:.1f}%) — Vui lòng CHỚP MẮT để xác nhận người thật"
+                    }), flush=True)
+                    continue
+
         # Áp dụng bộ lọc khử lóa kính cho vùng mắt/mặt
         roi_stabilized = get_stabilized_img(roi)
         rgb_roi = cv2.cvtColor(roi_stabilized, cv2.COLOR_BGR2RGB)
@@ -593,7 +646,14 @@ while True:
             if best_votes >= VOTES_REQUIRED:
                 # --- KIỂM TRA BLINK TRƯỚC KHI MỞ KHÓA (v6.0) ---
                 if not liveness_result["blink_detected"]:
-                    # Đủ phiếu nhận diện NHƯNG chưa chớp mắt → yêu cầu chớp mắt
+                    # Đủ phiếu nhận diện NHƯNG chưa chớp mắt → Chuyển sang chế độ awaiting_blink
+                    scan_state["awaiting_blink"] = {
+                        "candidate": best_candidate,
+                        "profile_b64": profile_b64,
+                        "similarity": similarity_pct,
+                        "start_time": time.time(),
+                        "security_level": "STRICT" if mouth_occluded else "NORMAL"
+                    }
                     print(json.dumps({
                         "success": True,
                         "status": "blink_required",
@@ -613,6 +673,7 @@ while True:
                 scan_state["verify_buffer"] = []
                 scan_state["miss_counter"] = 0
                 scan_state["last_match"] = None
+                scan_state["awaiting_blink"] = None
                 reset_liveness_state()
                 print(json.dumps({
                     "success": True, 

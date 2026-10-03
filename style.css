@@ -59,6 +59,18 @@ body.performance-mode::before {
     opacity: 0.03;
 }
 
+/* --- UNLOCKED / BACKGROUND MODE (v6.3.5) --- */
+/* Completely shut down GPU/CPU effects when unlocked & idling in tray */
+body.app-unlocked::before,
+body.app-unlocked * {
+    animation-play-state: paused !important;
+}
+body.app-unlocked .glass-panel,
+body.app-unlocked .modal-content {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+}
+
 body.performance-mode .glass-panel,
 body.performance-mode .modal-content,
 body.performance-mode .log-console {

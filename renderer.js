@@ -754,6 +754,7 @@ ipcRenderer.on('request-exit-pass', () => {
 
 ipcRenderer.on('app-locked', () => { 
     isLocked = true; 
+    document.body.classList.remove('app-unlocked');
     stopScan(); // DỌN DẸP TOÀN BỘ TRẠNG THÁI QUÉT (v2.3.4.8)
     if (progressBar) progressBar.style.width = '0%';
     if (completionText) completionText.innerText = '0%';
@@ -761,7 +762,12 @@ ipcRenderer.on('app-locked', () => {
     lockScreen.classList.add('active'); 
     scanScreen.classList.remove('active');
 });
-ipcRenderer.on('app-unlocked', () => { isLocked = false; lockScreen.classList.remove('active'); });
+ipcRenderer.on('app-unlocked', () => { 
+    isLocked = false; 
+    document.body.classList.add('app-unlocked');
+    stopScan();
+    lockScreen.classList.remove('active'); 
+});
 
 // --- AUTO UPDATE UI HANDLERS v2.6.0 ---
 let updateUrl = "";

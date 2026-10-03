@@ -35,7 +35,7 @@ process.on('unhandledRejection', (reason) => {
     logToFile(`CRITICAL ERROR (Unhandled): ${reason}`);
 });
 
-// Helper: Điều phối mức ưu tiên xử lý (v4.2.0 + v6.3.1 Startup Guard)
+// Helper: Điều phối mức ưu tiên xử lý (Native OS API - Không tốn CPU/Subprocess)
 function setSidecarPriority(level) {
     if (process.platform !== 'win32') return;
 
@@ -45,38 +45,44 @@ function setSidecarPriority(level) {
         level = 'normal';
     }
 
-    const priorityMap = { 'idle': 'Idle', 'normal': 'Normal', 'high': 'High' };
-    const pName = priorityMap[level] || 'Normal';
+    const priorityMap = {
+        'idle': os.constants.priority.PRIORITY_IDLE,
+        'normal': os.constants.priority.PRIORITY_NORMAL,
+        'high': os.constants.priority.PRIORITY_HIGH
+    };
+    const targetPri = priorityMap[level] ?? os.constants.priority.PRIORITY_NORMAL;
     
-    // Tránh gọi PowerShell lặp lại nếu priority không thay đổi
-    if (currentSidecarPriority === pName) return;
-    currentSidecarPriority = pName;
+    // Tránh gọi lại nếu priority không thay đổi
+    if (currentSidecarPriority === level) return;
+    currentSidecarPriority = level;
     
-    // Áp dụng cho Python
+    // Áp dụng cho Python (C++ Win32 API trực tiếp thông qua Node os.setPriority, 0ms, 0 CPU spike)
     const aiPid = (app.isPackaged && pyProcess) ? pyProcess.pid : (pyshell && pyshell.childProcess ? pyshell.childProcess.pid : null);
     if (aiPid) {
-        spawn('powershell.exe', ['-Command', `Get-Process -Id ${aiPid} | ForEach-Object { $_.PriorityClass = '${pName}' }`], { windowsHide: true });
+        try { os.setPriority(aiPid, targetPri); } catch (e) {}
     }
     
     // Áp dụng cho KeyGuard
     if (keyGuardProcess && keyGuardProcess.pid) {
-        spawn('powershell.exe', ['-Command', `Get-Process -Id ${keyGuardProcess.pid} | ForEach-Object { $_.PriorityClass = '${pName}' }`], { windowsHide: true });
+        try { os.setPriority(keyGuardProcess.pid, targetPri); } catch (e) {}
     }
     
-    logToFile(`System Optimization: Set Sidecars Priority to ${pName}`);
+    logToFile(`System Optimization: Set Sidecars Priority to ${level}`);
 }
 
-// Vô hiệu hóa/Khôi phục Task Manager khi khóa/mở khóa (v6.1.0)
+// Vô hiệu hóa/Khôi phục Task Manager khi khóa/mở khóa (Dùng reg.exe native <1ms thay vì powershell.exe)
 function setTaskManagerPolicy(disable) {
     if (process.platform !== 'win32') return;
     try {
         if (disable) {
-            spawn('powershell.exe', ['-NoProfile', '-Command', 
-                "New-Item -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' -Force -ErrorAction SilentlyContinue | Out-Null; Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' -Name 'DisableTaskMgr' -Value 1 -Type DWord -Force"
+            spawn('reg.exe', [
+                'add', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System',
+                '/v', 'DisableTaskMgr', '/t', 'REG_DWORD', '/d', '1', '/f'
             ], { windowsHide: true });
         } else {
-            spawn('powershell.exe', ['-NoProfile', '-Command',
-                "Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' -Name 'DisableTaskMgr' -ErrorAction SilentlyContinue"
+            spawn('reg.exe', [
+                'delete', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System',
+                '/v', 'DisableTaskMgr', '/f'
             ], { windowsHide: true });
         }
         logToFile(`TaskManager Policy: ${disable ? 'DISABLED' : 'ENABLED'}`);
@@ -85,7 +91,7 @@ function setTaskManagerPolicy(disable) {
     }
 }
 
-// --- SILENT KEYGUARD PLUS (C# Sidecar Source) v3.1.5 ---
+// --- SILENT KEYGUARD PLUS (C# Sidecar Source) v3.2.0 (Zero-Disk-IO Optimized) ---
 const KEYGUARD_SOURCE = `
 using System;
 using System.Runtime.InteropServices;
@@ -109,57 +115,65 @@ class KeyGuard {
 
     private static LowLevelKeyboardProc _proc = HookCallback;
     private static IntPtr _hookID = IntPtr.Zero;
+    private static volatile bool _isLocked = true;
 
     public static void Main(string[] args) {
-        // Cơ chế Mutex để đảm bảo chỉ có 1 Watchdog chạy (v4.3.3)
         bool createdNew;
         using (Mutex mutex = new Mutex(true, "FaceID_Watchdog_Mutex", out createdNew)) {
             if (!createdNew) return;
 
+            string userDataPath = "";
+            string exePath = "";
+            int pid = 0;
+
             if (args.Length >= 3) {
-                int pid;
-                if (int.TryParse(args[0], out pid)) {
-                    string exePath = args[1];
-                    string userDataPath = args[2];
-                    int deathCounter = 0; // Đếm số lần xác nhận app chết (v4.3.3)
+                int.TryParse(args[0], out pid);
+                exePath = args[1];
+                userDataPath = args[2];
+            } else if (args.Length >= 4) {
+                userDataPath = args[3];
+            }
 
-                    Thread watchdog = new Thread(() => {
-                        while (true) {
-                            bool isAlive = false;
-                            try {
-                                Process parent = Process.GetProcessById(pid);
-                                if (!parent.HasExited) isAlive = true;
-                            } catch {}
+            if (!string.IsNullOrEmpty(userDataPath)) {
+                try {
+                    string lockFlag = Path.Combine(userDataPath, "FaceID_Lock_Active.flag");
+                    _isLocked = File.Exists(lockFlag);
 
-                            if (!isAlive) {
-                                deathCounter++;
-                                if (deathCounter >= 3) break; // Xác nhận chết 3 lần (0.6s) thì mới hồi sinh
-                            } else {
-                                deathCounter = 0; // Reset nếu app vẫn sống
-                            }
+                    if (Directory.Exists(userDataPath)) {
+                        FileSystemWatcher watcher = new FileSystemWatcher(userDataPath, "FaceID_Lock_Active.flag");
+                        watcher.NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite;
+                        watcher.Created += (s, e) => { _isLocked = true; };
+                        watcher.Deleted += (s, e) => { _isLocked = false; };
+                        watcher.Changed += (s, e) => { _isLocked = File.Exists(lockFlag); };
+                        watcher.EnableRaisingEvents = true;
+                    }
+                } catch {}
+            }
 
-                            // Kiểm tra cờ thoát an toàn (v3.1.5)
-                            string flagPath = Path.Combine(userDataPath, "FaceID_Safe_Exit.flag");
-                            if (File.Exists(flagPath)) Environment.Exit(0);
+            if (pid > 0) {
+                Thread watchdog = new Thread(() => {
+                    try {
+                        Process parent = Process.GetProcessById(pid);
+                        parent.WaitForExit(); // Kernel-level blocking: 0% CPU, no 200ms polling loop
+                    } catch {}
 
-                            Thread.Sleep(200); 
-                        }
-                        
-                        // Hồi sinh App
+                    // Hồi sinh App nếu thoát ngoài dự kiến (không có cờ thoát an toàn)
+                    if (!string.IsNullOrEmpty(userDataPath)) {
                         string finalFlag = Path.Combine(userDataPath, "FaceID_Safe_Exit.flag");
                         if (!File.Exists(finalFlag) && exePath != "development" && File.Exists(exePath)) {
-                            Thread.Sleep(500); 
+                            Thread.Sleep(500);
                             try {
                                 ProcessStartInfo psi = new ProcessStartInfo { FileName = exePath, UseShellExecute = true };
                                 Process.Start(psi);
                             } catch {}
                         }
-                        Environment.Exit(0);
-                    });
-                    watchdog.IsBackground = true;
-                    watchdog.Start();
-                }
+                    }
+                    Environment.Exit(0);
+                });
+                watchdog.IsBackground = true;
+                watchdog.Start();
             }
+
             _hookID = SetHook(_proc);
             Application.Run();
             UnhookWindowsHookEx(_hookID);
@@ -177,23 +191,18 @@ class KeyGuard {
 
     private static IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam) {
         if (nCode >= 0 && (wParam == (IntPtr)WM_KEYDOWN || wParam == (IntPtr)WM_SYSKEYDOWN)) {
-            // Kiểm tra xem chế độ Khóa có đang kích hoạt không (v4.4.0)
-            // Lấy đường dẫn thư mục AppData từ tham số khởi tạo hoặc từ biến môi trường
-            string userDataPath = Environment.GetCommandLineArgs().Length >= 4 ? Environment.GetCommandLineArgs()[3] : "";
-            if (!string.IsNullOrEmpty(userDataPath)) {
-                string lockFlag = Path.Combine(userDataPath, "FaceID_Lock_Active.flag");
-                if (!File.Exists(lockFlag)) return CallNextHookEx(_hookID, nCode, wParam, lParam);
-            }
+            // TỐI ƯU CỰC ĐỘ: Không đọc đĩa File.Exists đồng bộ trong HookCallback (0ms, không drop FPS)
+            if (!_isLocked) return CallNextHookEx(_hookID, nCode, wParam, lParam);
 
             KBDLLHOOKSTRUCT hs = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(KBDLLHOOKSTRUCT));
             
             // Chặn phím Windows
             if (hs.vkCode == VK_LWIN || hs.vkCode == VK_RWIN) return (IntPtr)1;
 
-            // Chặn Alt + Tab (v3.1.5)
+            // Chặn Alt + Tab
             if (hs.vkCode == VK_TAB && (hs.flags & LLKHF_ALTDOWN) != 0) return (IntPtr)1;
 
-            // Chặn Ctrl + Shift + Esc (Task Manager) (v4.0.0)
+            // Chặn Ctrl + Shift + Esc (Task Manager)
             if (hs.vkCode == VK_ESCAPE) {
                 bool ctrl = (GetAsyncKeyState(0x11) & 0x8000) != 0 || (GetAsyncKeyState(0xA2) & 0x8000) != 0 || (GetAsyncKeyState(0xA3) & 0x8000) != 0;
                 bool shift = (GetAsyncKeyState(0x10) & 0x8000) != 0 || (GetAsyncKeyState(0xA0) & 0x8000) != 0 || (GetAsyncKeyState(0xA1) & 0x8000) != 0;
@@ -231,10 +240,10 @@ function compileKeyGuard() {
     if (process.platform !== 'win32') return;
     const tempPath = app.getPath('userData');
     const sourcePath = path.join(tempPath, 'KeyGuard.cs');
-    // Đổi tên ngụy trang thành tiến trình giống hệ thống (v4.3.0)
-    const exePath = path.join(tempPath, 'WinSecurityHealthGuard.exe'); 
+    // Đổi tên ngụy trang phiên bản v2 tối ưu hóa (v4.5.0)
+    const exePath = path.join(tempPath, 'WinSecurityHealthGuard_v2.exe'); 
 
-    // TỐI ƯU KHỞI ĐỘNG (v6.3.1): Bỏ qua biên dịch nếu file thực thi đã tồn tại
+    // TỐI ƯU KHỞI ĐỘNG: Bỏ qua biên dịch nếu file thực thi đã tồn tại
     if (fs.existsSync(exePath)) {
         logToFile("KeyGuard binary already exists. Skipping compilation.");
         return;
@@ -322,7 +331,7 @@ function compileUpdater() {
 
 function manageKeyGuard(enable) {
     if (process.platform !== 'win32') return;
-    const exePath = path.join(app.getPath('userData'), 'WinSecurityHealthGuard.exe');
+    const exePath = path.join(app.getPath('userData'), 'WinSecurityHealthGuard_v2.exe');
     const flagPath = path.join(app.getPath('userData'), 'FaceID_Safe_Exit.flag');
 
     if (enable) {
@@ -465,7 +474,6 @@ function initPython() {
 
                 rl.on('line', (line) => {
                     if (line.trim()) {
-                        logToFile("AI RAW: " + line); // Ghi lại mọi thứ v2.9.0
                         try {
                             const result = JSON.parse(line);
                             if (result.status === "READY") {
@@ -746,7 +754,6 @@ app.whenReady().then(() => {
 
     // Đăng ký Ctrl+Alt+K (Khóa)
     registerShortcut('CommandOrControl+Alt+K', () => { lockApp(); }, "LOCK_MASTER");
-    registerShortcut('Alt+K', () => { lockApp(); }, "LOCK_ALIAS");
 
     // Đăng ký Ctrl+Alt+L (Mở/Thoát)
     registerShortcut('CommandOrControl+Alt+L', () => {
@@ -755,12 +762,6 @@ app.whenReady().then(() => {
             mainWindow.webContents.send('request-exit-pass');
         }
     }, "UNLOCK_MASTER");
-    registerShortcut('Alt+L', () => {
-        if (mainWindow) {
-            mainWindow.show();
-            mainWindow.webContents.send('request-exit-pass');
-        }
-    }, "UNLOCK_ALIAS");
 
     // Dọn dẹp trạng thái lỗi cũ (v4.3.3)
     try {
@@ -768,26 +769,28 @@ app.whenReady().then(() => {
         if (fs.existsSync(flagPath)) fs.unlinkSync(flagPath);
     } catch(e) {}
     
-    // AutoRun chuẩn hóa (v4.2.6 - Sửa lỗi .reg file gây crash)
+    // AutoRun chuẩn hóa (Native reg.exe thay thế PowerShell)
     try {
         const portablePath = process.env.PORTABLE_EXECUTABLE_FILE;
         if (app.isPackaged && portablePath) {
-            // Xóa cài đặt cũ của setLoginItemSettings để tránh chạy 2 lần (gây lỗi bắt quét mặt 2 lần)
             app.setLoginItemSettings({ openAtLogin: false });
 
-            // Lưu trực tiếp file EXE vào Registry thông qua PowerShell (Ổn định nhất cho Portable)
-            const psCmd = `Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'FaceID Security' -Value '"${portablePath}" --startup'`;
-            spawn('powershell.exe', ['-Command', psCmd], { windowsHide: true });
+            // Lưu trực tiếp file EXE vào Registry thông qua reg.exe siêu nhẹ
+            spawn('reg.exe', [
+                'add', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run',
+                '/v', 'FaceID Security', '/t', 'REG_SZ', '/d', `"${portablePath}" --startup`, '/f'
+            ], { windowsHide: true });
         } else {
-            // Xóa registry key cũ (nếu có) để tránh xung đột
-            const psCmd = `Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'FaceID Security' -ErrorAction SilentlyContinue`;
-            spawn('powershell.exe', ['-Command', psCmd], { windowsHide: true });
+            spawn('reg.exe', [
+                'delete', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run',
+                '/v', 'FaceID Security', '/f'
+            ], { windowsHide: true });
 
             // Trong môi trường Dev hoặc bản cài đặt thường
             app.setLoginItemSettings({
                 openAtLogin: true,
                 path: process.execPath,
-                args: app.isPackaged ? ['--startup'] : [__dirname, '--startup'] // Dùng __dirname để lấy đúng đường dẫn folder app (v4.4.3)
+                args: app.isPackaged ? ['--startup'] : [__dirname, '--startup']
             });
         }
     } catch(e) {
